@@ -64,7 +64,9 @@ jobs:
           for f in _build/logs/*.log; do
             [ -f "$f" ] || continue
             if grep -qE '^configure: error|\*\*\* \[' "$f"; then
-              msg="$(grep -nE '^configure: error|error:|\*\*\* \[' "$f" | head -n 12 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
+              # linker failures: the cause (undefined reference / cannot find -l...) precedes collect2
+              msg="$( { grep -nE 'undefined reference|cannot find -l|No such file|^configure: error' "$f" | head -n 15
+                        grep -nB12 -m1 'collect2: error' "$f"; } | sed 's/%/%25/g' | cut -c1-300 | awk '{printf "%s%%0A", $0}')"
               echo "::error title=$(basename "$f")::$msg"
             fi
           done
