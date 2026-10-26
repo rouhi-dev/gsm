@@ -1,0 +1,40 @@
+[submodule "libosmocore"]
+	path = libs/libosmocore
+	url = https://github.com/rouhi-dev/libosmocore.git
+	branch = master
+[submodule "libosmo-netif"]
+	path = libs/libosmo-netif
+	url = https://github.com/rouhi-dev/libosmo-netif.git
+	branch = master
+[submodule "libosmo-abis"]
+	path = libs/libosmo-abis
+	url = https://github.com/rouhi-dev/libosmo-abis.git
+	branch = master
+[submodule "libosmo-sigtran"]
+	path = libs/libosmo-sigtran
+	url = https://github.com/rouhi-dev/libosmo-sigtran.git
+	branch = master
+[submodule "osmo-mgw"]
+	path = apps/osmo-mgw
+	url = https://github.com/rouhi-dev/osmo-mgw.git
+	branch = master
+[submodule "osmo-hlr"]
+	path = apps/osmo-hlr
+	url = https://github.com/rouhi-dev/osmo-hlr.git
+	branch = master
+[submodule "osmo-msc"]
+	path = apps/osmo-msc
+	url = https://github.com/rouhi-dev/osmo-msc.git
+	branch = master
+[submodule "osmo-bsc"]
+	path = apps/osmo-bsc
+	url = https://github.com/rouhi-dev/osmo-bsc.git
+	branch = master
+[submodule "osmo-bts"]
+	path = apps/osmo-bts
+	url = https://github.com/rouhi-dev/osmo-bts.git
+	branch = master
+[submodule "osmo-trx"]
+	path = apps/osmo-trx
+	url = https://github.com/rouhi-dev/osmo-trx.git
+	branch = master
