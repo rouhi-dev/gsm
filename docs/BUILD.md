@@ -11,7 +11,7 @@ Build-time requirements at the pinned releases (from each `configure.ac`):
 | libosmo-abis | libosmocore, libosmo-netif | libosmoabis, libosmotrau |
 | libosmo-sigtran | libosmocore, libosmo-netif | libosmo-sigtran, **osmo-stp** |
 | osmo-mgw | libosmocore, libosmo-netif, libosmo-abis | osmo-mgw, libosmo-mgcp-client |
-| osmo-hlr | libosmocore, libosmo-abis | osmo-hlr, libosmo-gsup-client |
+| osmo-hlr | libosmocore, libosmo-abis | osmo-hlr, libosmo-gsup-client, libosmo-mslookup |
 | osmo-msc | libosmocore, netif, abis, sigtran, **osmo-mgw** (mgcp-client), **osmo-hlr** (gsup-client) | osmo-msc |
 | osmo-bsc | libosmocore, netif, abis, sigtran, **osmo-mgw** (mgcp-client) | osmo-bsc, abisip-find, ipaccess-config, … |
 | osmo-bts | libosmocore, libosmo-netif, libosmo-abis (+trau) | osmo-bts-virtual, osmo-bts-trx, … |
@@ -112,6 +112,9 @@ so they aren't wired into this repo. Use them before running modified elements i
 
 | Symptom | Fix |
 |---|---|
+| `[FAIL] <name>: needs <module> (from <component>), which is not installed` | a dependency was not built/installed. Run the `./gsm build …` command printed after the failure |
+| `[FAIL] <name>: <module> would come from /usr/..., not from …/_install` | a dependency is missing from the prefix and a system package would be used. Build the named component first |
+| "can't find the binaries" | they're in `_install/bin`. The build must finish (`Result: OK`); `eval "$(./gsm env)"` puts them on `PATH` |
 | `[FAIL] <name>: cannot reach https://github.com/rouhi-dev/<name>.git` | fork missing → `tools/create-forks.sh`, or `./gsm init --source mirror` |
 | `not our ref` / `reference is not a tree` during init | pinned commit not in your fork → push the tag (docs/UPSTREAM.md) |
 | `No package 'talloc' found` (or another module) | install the `-dev` package `./gsm doctor` names, or disable the feature |
