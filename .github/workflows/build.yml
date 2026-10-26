@@ -15,6 +15,9 @@ on:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash   # = bash --noprofile --norc -eo pipefail, so a failure before | tee still fails the step
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4          # submodules are handled by ./gsm init
@@ -38,13 +41,33 @@ jobs:
         run: ./gsm doctor
 
       - name: Build
-        run: ./gsm build ${{ inputs.unit_tests && '--check' || '' }}
+        run: |
+          mkdir -p _build/ci
+          ./gsm build ${{ inputs.unit_tests && '--check' || '' }} 2>&1 | tee _build/ci/build.out
 
       - name: Verify workspace
-        run: ./gsm verify --build
+        run: ./gsm verify --build 2>&1 | tee _build/ci/verify.out
 
       - name: Core-network smoke test
-        run: tests/smoke-core.sh
+        run: tests/smoke-core.sh 2>&1 | tee _build/ci/smoke.out
+
+      # Surface the tool's [FAIL] lines (and the log excerpts it prints) as annotations, so the reason
+      # is visible on the run page and through the API without downloading logs.
+      - name: Annotate failures
+        if: failure()
+        run: |
+          for f in _build/ci/*.out; do
+            [ -f "$f" ] || continue
+            msg="$(grep -E '^\[FAIL\]|^ +\| |^ +-> ' "$f" | head -n 40 | sed 's/%/%25/g; s/\r//g' | awk '{printf "%s%%0A", $0}')"
+            [ -n "$msg" ] && echo "::error title=$(basename "$f" .out) failed::$msg"
+          done
+          for f in _build/logs/*.log; do
+            [ -f "$f" ] || continue
+            if grep -qE '^configure: error|\*\*\* \[' "$f"; then
+              msg="$(grep -nE '^configure: error|error:|\*\*\* \[' "$f" | head -n 12 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
+              echo "::error title=$(basename "$f")::$msg"
+            fi
+          done
 
       - name: Upload build logs
         if: failure()
