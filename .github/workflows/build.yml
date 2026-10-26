@@ -29,7 +29,7 @@ jobs:
             build-essential autoconf automake libtool pkg-config python3 sqlite3 \
             libtalloc-dev libsctp-dev libsqlite3-dev libgnutls28-dev libmnl-dev \
             libpcsclite-dev libusb-1.0-0-dev liburing-dev libortp-dev libfftw3-dev \
-            libuhd-dev libboost-dev
+            libuhd-dev libboost-all-dev   # same as osmo-trx debian/control (uhd links boost_system etc.)
 
       - name: Enable kernel SCTP (osmo-msc SGs listener, libosmocore SCTP tests)
         run: sudo modprobe sctp || echo "::warning::sctp module unavailable; smoke test will report it"
