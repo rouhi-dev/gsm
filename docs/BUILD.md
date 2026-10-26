@@ -74,6 +74,10 @@ then stops, because later components may depend on the failed one.
   libraries they need must already be installed in the prefix.
 - Your own environment is passed through. `PKG_CONFIG_PATH`, `CPPFLAGS` and `LDFLAGS` work as usual,
   e.g. for dependencies installed in a non-standard prefix.
+- systemd unit files (`osmo-*.service`) are installed to `$GSM_PREFIX/lib/systemd/system`, not the system
+  directory. Upstream's default would write to `/usr/lib/systemd/system` regardless of `--prefix`. To use
+  them, copy them into place deliberately (adjust `ExecStart` paths). To override, set
+  `--with-systemdsystemunitdir=…` in `config/build.local.conf`.
 - Generated autotools files are git-ignored upstream, so `./gsm status` stays clean after a build.
 
 Building one component by hand (same as the tool does):
@@ -113,4 +117,5 @@ so they aren't wired into this repo. Use them before running modified elements i
 | `No package 'talloc' found` (or another module) | install the `-dev` package `./gsm doctor` names, or disable the feature |
 | `netinet/sctp.h not found` | `apt install libsctp-dev`. If it's in a custom prefix, export `CPPFLAGS=-I<prefix>/include LDFLAGS=-L<prefix>/lib` |
 | an app fails to link against a fresh library | rebuild everything downstream of a library you changed: `./gsm build` |
+| `install-systemdsystemunitDATA` error during install | fixed in `./gsm` (units go into the prefix). `git pull` and re-run `./gsm build` |
 | binaries can't find `libosmo*.so` at runtime | `eval "$(./gsm env)"` (sets `LD_LIBRARY_PATH`) |
