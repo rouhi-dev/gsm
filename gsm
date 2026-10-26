@@ -44,10 +44,10 @@ summary() {
 command -v git >/dev/null || die "git not found"
 
 # ---------------------------------------------------------------- manifest
-NAMES=(); declare -A CPATH CTAG CUP
-while read -r n p t u _; do
+NAMES=(); declare -A CPATH CTAG CUP CSUB
+while read -r n p t u s _; do
 	[[ -z "$n" || "$n" == \#* ]] && continue
-	NAMES+=("$n"); CPATH[$n]="$p"; CTAG[$n]="$t"; CUP[$n]="$u"
+	NAMES+=("$n"); CPATH[$n]="$p"; CTAG[$n]="$t"; CUP[$n]="$u"; CSUB[$n]="${s:-.}"
 done < "$MANIFEST"
 (( ${#NAMES[@]} )) || die "no components in $MANIFEST"
 
@@ -58,6 +58,7 @@ fork_url()   { git -C "$ROOT" config -f .gitmodules "submodule.$1.url"; }
 gitlink()    { git -C "$ROOT" ls-files -s -- "${CPATH[$1]}" | awk '$1=="160000"{print $2}'; }
 checked_out(){ [[ -e "$ROOT/${CPATH[$1]}/.git" ]] && git -C "$ROOT/${CPATH[$1]}" rev-parse -q --verify HEAD >/dev/null 2>&1; }
 is_sha()     { [[ "$1" =~ ^[0-9a-f]{7,40}$ ]]; }
+subdirs()    { tr ',' ' ' <<<"${CSUB[$1]}"; }        # autotools projects inside a component
 
 # ---------------------------------------------------------------- dependency graph (derived, not hardcoded)
 # PROVIDER[module] = component, from the *.pc.in files in each component at its pinned commit.
@@ -71,12 +72,16 @@ load_graph() {
 	for n in "${NAMES[@]}"; do
 		p="$ROOT/${CPATH[$n]}"; c="$(gitlink "$n")"
 		[[ -n "$c" ]] && git -C "$p" cat-file -e "$c^{commit}" 2>/dev/null || return 1
-		while read -r f; do m="${f##*/}"; PROVIDER[${m%.pc.in}]="$n"; done \
-			< <(git -C "$p" ls-tree -r --name-only "$c" | grep '\.pc\.in$')
+		# only inside the subprojects that are built (osmocom-bb carries a private libosmocore copy
+		# for its firmware); the first component in manifest order that provides a module wins
+		local sd paths=()
+		for sd in $(subdirs "$n"); do paths+=("$sd"); done
+		while read -r f; do m="${f##*/}"; m="${m%.pc.in}"; [[ -n "${PROVIDER[$m]:-}" ]] || PROVIDER[$m]="$n"; done \
+			< <(git -C "$p" ls-tree -r --name-only "$c" -- "${paths[@]}" | grep '\.pc\.in$')
 	done
 	for n in "${NAMES[@]}"; do
 		p="$ROOT/${CPATH[$n]}"; c="$(gitlink "$n")"
-		REQS[$n]="$(git -C "$p" show "$c:configure.ac" |
+		REQS[$n]="$(for sd in $(subdirs "$n"); do git -C "$p" show "$c:${sd#./}${sd:+/}configure.ac" 2>/dev/null; done |
 			sed -n 's/.*PKG_CHECK_MODULES( *\[\{0,1\}[A-Za-z0-9_]*\]\{0,1\} *, *\[\{0,1\} *\([A-Za-z0-9_.+-]*\)\( *\(>=\) *\([0-9.]*\)\)\{0,1\}.*/\1 \3 \4/p')"
 		local d=" "
 		while read -r m _; do
@@ -246,6 +251,10 @@ cmd_verify() {
 		local commits lic dirty
 		commits="$(git -C "$ROOT/$p" rev-list --count HEAD)"
 		lic="$(cd "$ROOT/$p" && ls COPYING* LICENSE* 2>/dev/null | head -1)"
+		if [[ -z "$lic" ]]; then              # multi-project repos keep licences per subproject
+			local sd ls=(); for sd in $(subdirs "$n"); do [[ -f "$ROOT/$p/$sd/COPYING" ]] && ls+=("$sd/COPYING"); done
+			(( ${#ls[@]} )) && lic="COPYING in ${#ls[@]} of $(wc -w <<<"$(subdirs "$n")") subprojects"
+		fi
 		dirty="$(git -C "$ROOT/$p" status --porcelain --untracked-files=no)"
 		[[ -z "$lic" ]] && warn "$n: no COPYING/LICENSE file at top level"
 		[[ -n "$dirty" ]] && warn "$n: tracked files modified"
@@ -273,6 +282,7 @@ cmd_verify() {
 
 	head1 "Build products in ${GSM_PREFIX/#$ROOT\//}"
 	local -a bins=(osmo-stp osmo-mgw osmo-hlr osmo-msc osmo-bsc osmo-bts-virtual osmo-bts-trx)
+	is_component osmocom-bb && bins+=(virtphy mobile trxcon)
 	local b found=0 missing=()
 	for b in "${bins[@]}"; do [[ -x "$GSM_PREFIX/bin/$b" ]] && found=$((found+1)) || missing+=("$b"); done
 	local trx; trx="$(ls "$GSM_PREFIX"/bin/osmo-trx-* 2>/dev/null | xargs -rn1 basename | tr '\n' ' ')"
@@ -291,7 +301,7 @@ export_env() {
 	# the prefix comes first, so this workspace's libraries always win over any system-installed copies
 	export PKG_CONFIG_PATH="$GSM_PREFIX/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
 	export LD_LIBRARY_PATH="$GSM_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-	export PATH="$GSM_PREFIX/bin:$PATH"
+	export PATH="$GSM_PREFIX/bin:$GSM_PREFIX/sbin:$PATH"
 }
 
 cmd_doctor() {
@@ -369,33 +379,44 @@ build_one() {
 		{ fail "$n: checked out $(git -C "$src" rev-parse --short HEAD), not the pinned commit"; hint "git submodule update -- ${CPATH[$n]}"; return 1; }
 	deps_ready "$n" || return 1
 	printf '       %s: needs %s -- all installed in prefix at pinned versions\n' "$n" "${DEPS[$n]:-nothing from this workspace}"
-	local flags="${CONFIGURE_FLAGS[$n]:-}" step
-	# Upstream's default ("auto") asks pkg-config for systemd's unit dir and installs *.service files
-	# there (/usr/lib/systemd/system), ignoring --prefix: fails without root, or pollutes the system with
-	# it. Keep them inside the prefix unless the user chose a location explicitly.
-	if grep -q 'systemdsystemunitdir' "$src/configure.ac" && [[ "$flags" != *systemdsystemunitdir* ]]; then
-		flags+="${flags:+ }--with-systemdsystemunitdir=$GSM_PREFIX/lib/systemd/system"
-	fi
-	printf '       %s: configure %s\n' "$n" "${flags:-(defaults)}"
+	local base_flags="${CONFIGURE_FLAGS[$n]:-}" step sd s b flags label
 	run() { step="$1"; shift; echo "### $step: $*" >>"$log"; "$@" >>"$log" 2>&1; }
-	# shellcheck disable=SC2086
-	if run autoreconf bash -c "cd '$src' && autoreconf -fi" &&
-	   run configure bash -c "cd '$bld' && '$src/configure' --prefix='$GSM_PREFIX' --libdir='$GSM_PREFIX/lib' $flags" &&
-	   run make make -C "$bld" -j"$jobs" &&
-	   { (( ! check )) || run check make -C "$bld" -j"$jobs" check; } &&
-	   { touch "$bld/.install-stamp"; run install make -C "$bld" install; }; then
-		:
-	else
-		fail "$n: '$step' step failed -- full log: ${log#$ROOT/}"
-		grep -n -m5 -i -E 'error|not found|No package' "$log" | tail -n 5 | sed 's/^/       | /'
-		echo "       | ... last lines:"; tail -n 8 "$log" | sed 's/^/       | /'
-		if [[ "$step" == check ]]; then   # autotest keeps a per-test log only for failed tests
-			find "$bld" -path '*testsuite.dir/*/testsuite.log' 2>/dev/null | head -5 | while read -r f; do
-				printf '       | failed: %s  (%s)\n' "$(sed -n '2s/^[0-9]*\. *[^ ]*: *testing *//p' "$f" | sed 's/ *\.\.\.$//')" "${f#$ROOT/}"; done
-			find "$bld" -name 'test-suite.log' -size +1k 2>/dev/null | head -3 | sed "s|^$ROOT/||; s/^/       | see /"
+	touch "$bld/.install-stamp"
+	for sd in $(subdirs "$n"); do                       # one or more autotools projects, in order
+		s="$src/${sd#./}"; s="${s%/.}"; b="$bld/${sd#./}"; b="${b%/.}"
+		[[ "$sd" == . ]] || echo "### ===== subproject $sd" >>"$log"
+		[[ -f "$s/configure.ac" ]] || { fail "$n: $sd has no configure.ac"; return 1; }
+		mkdir -p "$b"; flags="$base_flags"; label="$n"; [[ "$sd" == . ]] || label="$n/$sd"
+		# Upstream's default ("auto") asks pkg-config for systemd's unit dir and installs *.service files
+		# there (/usr/lib/systemd/system), ignoring --prefix: fails without root, or pollutes the system with
+		# it. Keep them inside the prefix unless the user chose a location explicitly.
+		# LDFLAGS gets -rpath <prefix>/lib so every program loads this workspace's libraries even outside
+		# `./gsm env` -- some (e.g. osmocom-bb's mobile) are not linked through libtool and get no rpath,
+		# and an older system libosmocore with the same soname would otherwise be picked up.
+		if grep -q 'systemdsystemunitdir' "$s/configure.ac" && [[ "$flags" != *systemdsystemunitdir* ]]; then
+			flags+="${flags:+ }--with-systemdsystemunitdir=$GSM_PREFIX/lib/systemd/system"
 		fi
-		return 1
-	fi
+		printf '       %s: configure %s\n' "$label" "${flags:-(defaults)}"
+		# shellcheck disable=SC2086
+		if run autoreconf bash -c "cd '$s' && autoreconf -fi" &&
+		   run configure env LDFLAGS="${LDFLAGS:+$LDFLAGS }-Wl,-rpath,$GSM_PREFIX/lib" \
+		       bash -c "cd '$b' && '$s/configure' --prefix='$GSM_PREFIX' --libdir='$GSM_PREFIX/lib' $flags" &&
+		   run make make -C "$b" -j"$jobs" &&
+		   { (( ! check )) || run check make -C "$b" -j"$jobs" check; } &&
+		   run install make -C "$b" install; then
+			:
+		else
+			fail "$label: '$step' step failed -- full log: ${log#$ROOT/}"
+			grep -n -i -E 'error|not found|No package' "$log" | tail -n 5 | sed 's/^/       | /'
+			echo "       | ... last lines:"; tail -n 8 "$log" | sed 's/^/       | /'
+			if [[ "$step" == check ]]; then   # autotest keeps a per-test log only for failed tests
+				find "$b" -path '*testsuite.dir/*/testsuite.log' 2>/dev/null | head -5 | while read -r f; do
+					printf '       | failed: %s  (%s)\n' "$(sed -n '2s/^[0-9]*\. *[^ ]*: *testing *//p' "$f" | sed 's/ *\.\.\.$//')" "${f#$ROOT/}"; done
+				find "$b" -name 'test-suite.log' -size +1k 2>/dev/null | head -3 | sed "s|^$ROOT/||; s/^/       | see /"
+			fi
+			return 1
+		fi
+	done
 	# after install: what it provides must now resolve from the prefix
 	local m bad=0
 	for m in "${!PROVIDER[@]}"; do
@@ -403,7 +424,7 @@ build_one() {
 		[[ -f "$GSM_PREFIX/lib/pkgconfig/$m.pc" ]] || { fail "$n: install finished but $m.pc is missing from $GSM_PREFIX/lib/pkgconfig"; bad=1; }
 	done
 	(( bad )) && return 1
-	local bins; bins="$(find "$GSM_PREFIX/bin" -maxdepth 1 -type f -newer "$bld/.install-stamp" -printf '%f ' 2>/dev/null)"
+	local bins; bins="$(find "$GSM_PREFIX/bin" "$GSM_PREFIX/sbin" -maxdepth 1 -type f -newer "$bld/.install-stamp" -printf '%f ' 2>/dev/null)"
 	ok "$n $(git -C "$src" describe --tags --always) installed${bins:+ -> bin: $bins}"
 }
 
@@ -433,8 +454,12 @@ cmd_build() {
 	done
 	summary || return 1
 	echo
-	echo "Installed programs ($GSM_PREFIX/bin):"
-	ls "$GSM_PREFIX/bin" | grep -E '^osmo-|^abisip-find$|^ipaccess-config$' | tr '\n' ' ' | fold -s -w 96 | sed 's/^/  /'; echo
+	local d
+	for d in bin sbin; do
+		[[ -d "$GSM_PREFIX/$d" ]] || continue
+		echo "Installed programs ($GSM_PREFIX/$d):"
+		ls "$GSM_PREFIX/$d" | tr '\n' ' ' | fold -s -w 96 | sed 's/^/  /'; echo
+	done
 	echo "Run them with:  eval \"\$(./gsm env)\"   then e.g.  osmo-msc --version"
 	echo "Next: ./gsm verify --build && tests/smoke-core.sh"
 }
@@ -442,7 +467,7 @@ cmd_build() {
 cmd_env() {
 	echo "export PKG_CONFIG_PATH=\"$GSM_PREFIX/lib/pkgconfig\${PKG_CONFIG_PATH:+:\$PKG_CONFIG_PATH}\""
 	echo "export LD_LIBRARY_PATH=\"$GSM_PREFIX/lib\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}\""
-	echo "export PATH=\"$GSM_PREFIX/bin:\$PATH\""
+	echo "export PATH=\"$GSM_PREFIX/bin:$GSM_PREFIX/sbin:\$PATH\""
 }
 
 # ---------------------------------------------------------------- bump
