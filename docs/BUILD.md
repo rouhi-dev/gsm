@@ -29,7 +29,7 @@ sudo apt install build-essential autoconf automake libtool pkg-config git \
     libtalloc-dev libsctp-dev libsqlite3-dev sqlite3 \
     libgnutls28-dev libmnl-dev libpcsclite-dev libusb-1.0-0-dev liburing-dev \
     libortp-dev libfftw3-dev \
-    libuhd-dev uhd-host           # SDR driver for osmo-trx: pick the one matching your hardware
+    libuhd-dev uhd-host libboost-all-dev  # SDR driver for osmo-trx (UHD needs boost), pick per hardware
 ```
 
 Required in every configuration: **talloc, lksctp (libsctp), sqlite3**. The rest depends on configure flags.
