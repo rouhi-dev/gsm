@@ -93,8 +93,8 @@ while read -r n p tag _up _; do
 		fi
 		ok "$full already exists (fork of $par)"; status="existed"
 	elif grep -q 'HTTP 404' <<<"$meta"; then
-		if (( DRY )); then info "dry run: would run: gh repo fork $parent --clone=false --remote=false"; ROWS+=("$n|would create|-|-"); continue; fi
-		if attempt "fork $parent" gh repo fork "$parent" --clone=false --remote=false; then
+		if (( DRY )); then info "dry run: would run: gh repo fork $parent --clone=false"; ROWS+=("$n|would create|-|-"); continue; fi
+		if attempt "fork $parent" gh repo fork "$parent" --clone=false; then
 			ok "fork request accepted for $parent"; status="created"
 		else
 			info "retrying through the REST API"
