@@ -1,0 +1,27 @@
+! smoke test (template; tests/smoke-core.sh --with-ms fills in @WORK@ and @IMSI@/@KI@)
+! osmocom-bb "mobile" with a test SIM, talking to virtphy over a unix socket
+log stderr
+ logging filter all 1
+ logging print category 1
+ logging level set-all notice
+ logging level mm info
+ logging level rr notice
+line vty
+ no login
+ bind 127.0.0.1
+ms 1
+ layer2-socket @WORK@/l2
+ sap-socket @WORK@/sap
+ mncc-socket @WORK@/mncc
+ mncc-handler internal
+ sim test
+ network-selection-mode auto
+ imei 000000000000000 0
+ imei-fixed
+ sms-service-center 12345
+ location-updating
+ test-sim
+  imsi @IMSI@
+  ki comp128 @KI_SPACED@
+  no barred-access
+ no shutdown

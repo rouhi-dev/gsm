@@ -48,8 +48,8 @@ jobs:
       - name: Verify workspace
         run: ./gsm verify --build 2>&1 | tee _build/ci/verify.out
 
-      - name: Core-network smoke test
-        run: tests/smoke-core.sh 2>&1 | tee _build/ci/smoke.out
+      - name: Core-network smoke test + virtual phone (osmocom-bb)
+        run: tests/smoke-core.sh --with-ms 2>&1 | tee _build/ci/smoke.out
 
       # Surface the tool's [FAIL] lines (and the log excerpts it prints) as annotations, so the reason
       # is visible on the run page and through the API without downloading logs.
