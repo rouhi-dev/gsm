@@ -1,6 +1,6 @@
 # From sources to a working GSM network
 
-Having all ten submodules checked out, or even built, **does not mean you have an operational
+Having all the submodules checked out, or even built, **does not mean you have an operational
 network**. This page covers what the components do, what has been verified, and what's still missing.
 
 ## How the pieces connect
@@ -36,13 +36,15 @@ next to each.
 | BTS | `osmo-bts-virtual` | ✔ | ✔ Abis/IP to the BSC (no radio; virtual Um) |
 | BTS for SDR | `osmo-bts-trx` | ✔ | ✘ needs osmo-trx + hardware |
 | TRX | `osmo-trx-uhd` / `-lms` / `-blade` / `-ipc` | ✔ (driver per flags) | ✘ needs SDR hardware |
+| Virtual phone (MS) | `virtphy` + `mobile` (osmocom-bb) | ✔ | ✔ with `--with-ms`: authenticates (COMP128v1, auth required), location update, SMS to itself and back |
+| MS side for SDR | `trxcon` (osmocom-bb) | ✔ | ✘ needs osmo-trx/fake_trx or hardware |
 
-`tests/smoke-core.sh` produces the ✔ entries in the last column. It needs a kernel with SCTP support,
+`tests/smoke-core.sh` (and `--with-ms` for the phone row) produces the ✔ entries in the last column. It needs a kernel with SCTP support,
 because osmo-msc always opens an SCTP listener for its SGs (LTE CS-fallback) interface. Everything else
 in the test runs M3UA over TCP.
 
-**Not verified by anything in this repo:** radio transmission, a phone camping on the cell, location
-update/authentication, calls, SMS, handover. Those need the items below.
+**Not verified by anything in this repo:** radio transmission, a *real* phone camping on the cell, voice
+calls, handover. Location update, authentication and SMS are verified only with the virtual phone. Those need the items below.
 
 ## What a real network additionally needs
 
@@ -71,7 +73,6 @@ update/authentication, calls, SMS, handover. Those need the items below.
 | Calls to/from outside (SIP) | osmo-sip-connector + a PBX (Asterisk/FreeSWITCH) | needs osmo-msc with `mncc external` |
 | SMS via SMPP (ESME) | libsmpp34 | rebuild osmo-msc with `--enable-smpp` |
 | 3G (IuCS/IuPS) | osmo-iuh, libasn1c, osmo-hnbgw | rebuild osmo-msc with `--enable-iu` |
-| Virtual phone (no radio) | osmocom-bb (`virtphy`, `mobile`) | pairs with osmo-bts-virtual for end-to-end tests without RF |
 | Protocol test suites | osmo-ttcn3-hacks, docker-playground | Osmocom's own integration tests |
 | Ready-made dev workspace | osmo-dev | Osmocom's own make-based multi-repo build. Worth comparing with this repo. |
 
@@ -82,8 +83,8 @@ gitea.osmocom.org.
 
 1. Create the forks (`tools/create-forks.sh`), push this repo, and let CI build it once.
 2. Run `./gsm build --check` and `tests/smoke-core.sh` on your target host (with `modprobe sctp`).
-3. For a test without RF: build osmocom-bb's `virtphy` + `mobile` and attach a virtual phone to
-   `osmo-bts-virtual`. That exercises location update, auth, SMS and calls end to end.
+3. Without RF: `tests/smoke-core.sh --with-ms` already attaches an osmocom-bb virtual phone (auth, location
+   update, SMS). Voice calls between two virtual phones are the next thing to try by hand.
 4. With hardware: set `CONFIGURE_FLAGS[osmo-trx]` for your SDR, build, and work through the OsmoBTS
    and OsmoTRX manuals inside a shielded setup.
 5. Before relying on modified elements, run the relevant TTCN-3 suites.

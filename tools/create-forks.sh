@@ -13,7 +13,8 @@
 #      an existing repo that is NOT a fork of osmocom/<name> is reported and never touched;
 #   3. wait until the fork is reachable over git;
 #   4. prove the pinned commit is reachable from a ref *in the fork*: its release tag must exist in the
-#      fork and point at exactly that commit. (Commit lookups through the API are not proof: GitHub
+#      fork and point at exactly that commit (for a commit pin without a release, e.g. osmocom-bb: the
+#      commit must be an ancestor of the fork's master). (Commit lookups through the API are not proof: GitHub
 #      resolves objects across the whole fork network.) --push-missing-tags pushes the tag from the
 #      local submodule if it is missing;
 #   5. libosmo-sigtran only: once the fork is reachable and has a master branch, set its default
@@ -118,16 +119,30 @@ while read -r n p tag _up _; do
 	fi
 	ok "$full reachable over git ($(( SECONDS - t0 ))s)"
 
-	# -- pinned commit reachable from a ref in the fork (its release tag)
-	tagsha="$(git ls-remote "$url" "refs/tags/$tag" "refs/tags/$tag^{}" 2>>"$LOG" | sort -k2 | tail -n1 | cut -f1)"
-	if [[ -z "$tagsha" && $PUSH_TAGS == 1 && -e "$ROOT/$p/.git" ]]; then
-		attempt "push tag $tag to $full" git -C "$ROOT/$p" push "$url" "refs/tags/$tag" &&
-			tagsha="$(git ls-remote "$url" "refs/tags/$tag" "refs/tags/$tag^{}" | sort -k2 | tail -n1 | cut -f1)"
+	# -- pinned commit reachable from a ref in the fork
+	if [[ "$tag" =~ ^[0-9a-f]{40}$ ]]; then
+		# commit pin (no release): it must be an ancestor of the fork's master. Fetch only commit
+		# history (no file contents) into a throwaway repository to check.
+		tmp="$(mktemp -d)"
+		if attempt "create temporary repository" git -C "$tmp" init -q --bare . &&
+		   attempt "fetch $full master (history only)" git -C "$tmp" fetch -q --filter=blob:none --no-tags "$url" master; then
+			if git -C "$tmp" merge-base --is-ancestor "$pin" FETCH_HEAD 2>>"$LOG"; then
+				ok "pinned commit ${pin:0:12} is on $full master"; commit="verified"
+			else fail "pinned commit ${pin:0:12} is not on $full master"; commit="MISSING"
+				info "-> sync the fork (gh repo sync $full) or push the commit to a branch of the fork"; fi
+		else commit="not checked"; fi
+		rm -rf "$tmp"
+	else
+		tagsha="$(git ls-remote "$url" "refs/tags/$tag" "refs/tags/$tag^{}" 2>>"$LOG" | sort -k2 | tail -n1 | cut -f1)"
+		if [[ -z "$tagsha" && $PUSH_TAGS == 1 && -e "$ROOT/$p/.git" ]]; then
+			attempt "push tag $tag to $full" git -C "$ROOT/$p" push "$url" "refs/tags/$tag" &&
+				tagsha="$(git ls-remote "$url" "refs/tags/$tag" "refs/tags/$tag^{}" | sort -k2 | tail -n1 | cut -f1)"
+		fi
+		if [[ "$tagsha" == "$pin" ]]; then ok "pinned commit ${pin:0:12} present in fork (tag $tag)"; commit="verified"
+		elif [[ -z "$tagsha" ]]; then fail "tag $tag missing in $full, so the pinned commit is not proven present"
+			info "-> re-run with --push-missing-tags (after ./gsm init), or: git -C $p push $url refs/tags/$tag"; commit="MISSING"
+		else fail "tag $tag in $full points to ${tagsha:0:12}, but gsm pins ${pin:0:12}"; commit="MISMATCH"; fi
 	fi
-	if [[ "$tagsha" == "$pin" ]]; then ok "pinned commit ${pin:0:12} present in fork (tag $tag)"; commit="verified"
-	elif [[ -z "$tagsha" ]]; then fail "tag $tag missing in $full, so the pinned commit is not proven present"
-		info "-> re-run with --push-missing-tags (after ./gsm init), or: git -C $p push $url refs/tags/$tag"; commit="MISSING"
-	else fail "tag $tag in $full points to ${tagsha:0:12}, but gsm pins ${pin:0:12}"; commit="MISMATCH"; fi
 
 	# -- current default branch (and the libosmo-sigtran fix)
 	defbr="$(gh api "repos/$full" --jq .default_branch 2>>"$LOG")"

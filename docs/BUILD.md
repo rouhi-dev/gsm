@@ -10,12 +10,20 @@ Build-time requirements at the pinned releases (from each `configure.ac`):
 | libosmo-netif | libosmocore | libosmo-netif |
 | libosmo-abis | libosmocore, libosmo-netif | libosmoabis, libosmotrau |
 | libosmo-sigtran | libosmocore, libosmo-netif | libosmo-sigtran, **osmo-stp** |
+| libosmo-gprs | libosmocore | libosmo-gprs-{rlcmac,llc,sndcp,gmm,sm}, libosmo-csn1 |
 | osmo-mgw | libosmocore, libosmo-netif, libosmo-abis | osmo-mgw, libosmo-mgcp-client |
 | osmo-hlr | libosmocore, libosmo-abis | osmo-hlr, libosmo-gsup-client, libosmo-mslookup |
 | osmo-msc | libosmocore, netif, abis, sigtran, **osmo-mgw** (mgcp-client), **osmo-hlr** (gsup-client) | osmo-msc |
 | osmo-bsc | libosmocore, netif, abis, sigtran, **osmo-mgw** (mgcp-client) | osmo-bsc, abisip-find, ipaccess-config, … |
 | osmo-bts | libosmocore, libosmo-netif, libosmo-abis (+trau) | osmo-bts-virtual, osmo-bts-trx, … |
 | osmo-trx | libosmocore | osmo-trx-uhd / -lms / -blade / -ipc |
+| osmocom-bb | libosmocore, libosmo-gprs | virtphy, mobile, trxcon, ccch_scan, bcch_scan, cell_log, gprsdecode, … in `bin/`; osmocon, osmoload in `sbin/` |
+
+osmocom-bb isn't one autotools project but five (`src/host/{osmocon,virt_phy,trxcon,gprsdecode,layer23}`).
+The fifth column of `components.conf` lists them, and `./gsm build` builds each in turn, the same as
+upstream's `contrib/jenkins.sh`. Its bundled `src/shared/libosmocore` is for the phone firmware only and is
+ignored: the host programs link against the workspace's libosmocore. GAPK and Lua support in layer23 are
+optional and off unless their libraries are installed.
 
 So two applications are also build dependencies: osmo-msc needs osmo-mgw and osmo-hlr installed
 first, and osmo-bsc needs osmo-mgw.
@@ -78,6 +86,10 @@ then stops, because later components may depend on the failed one.
   directory. Upstream's default would write to `/usr/lib/systemd/system` regardless of `--prefix`. To use
   them, copy them into place deliberately (adjust `ExecStart` paths). To override, set
   `--with-systemdsystemunitdir=…` in `config/build.local.conf`.
+- Every program is linked with `-rpath <prefix>/lib`, so it loads the workspace's libraries even outside
+  `./gsm env`. Some (osmocom-bb's `mobile`, `virtphy`) aren't linked through libtool and would otherwise
+  pick up an older system libosmocore that has the same library file name.
+- `./gsm env` also puts `_install/sbin` on `PATH` (osmocon, osmoload).
 - Generated autotools files are git-ignored upstream, so `./gsm status` stays clean after a build.
 
 Building one component by hand (same as the tool does):
@@ -95,6 +107,7 @@ cd libs/libosmocore && autoreconf -fi && mkdir -p ../../_build/libosmocore && cd
 | Unit tests | `./gsm build --check` (runs `make check` per component) | the code behaves as upstream expects on your host |
 | Workspace checks | `./gsm verify --build` | pins = releases, history complete, version requirements consistent, binaries installed |
 | Core smoke test | `tests/smoke-core.sh` | STP, HLR, MGW, MSC and BSC start, and the BSC↔MSC A-interface comes up over M3UA |
+| Virtual phone | `tests/smoke-core.sh --with-ms` | additionally: an osmocom-bb virtual phone authenticates (COMP128v1, auth *required*), registers, and gets its own SMS back |
 | Full integration | Osmocom's TTCN-3 suites ([osmo-ttcn3-hacks](https://gitea.osmocom.org/ttcn3/osmo-ttcn3-hacks), run via [docker-playground](https://gitea.osmocom.org/osmocom/docker-playground)) | protocol conformance of each element against simulated peers |
 
 Some unit tests depend on the host. libosmocore's SCTP and io_uring tests can be turned off with

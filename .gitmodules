@@ -38,3 +38,11 @@
 	path = apps/osmo-trx
 	url = https://github.com/rouhi-dev/osmo-trx.git
 	branch = master
+[submodule "libosmo-gprs"]
+	path = libs/libosmo-gprs
+	url = https://github.com/rouhi-dev/libosmo-gprs.git
+	branch = master
+[submodule "osmocom-bb"]
+	path = apps/osmocom-bb
+	url = https://github.com/rouhi-dev/osmocom-bb.git
+	branch = master

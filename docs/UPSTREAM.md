@@ -24,6 +24,8 @@ official osmo-msc.git repository using `git clone https://gitea.osmocom.org/cell
 | osmo-bsc | cellular-infrastructure/osmo-bsc | osmocom/osmo-bsc |
 | osmo-bts | cellular-infrastructure/osmo-bts | osmocom/osmo-bts |
 | osmo-trx | cellular-infrastructure/osmo-trx | osmocom/osmo-trx |
+| libosmo-gprs | osmocom/libosmo-gprs | osmocom/libosmo-gprs |
+| osmocom-bb | phone-side/osmocom-bb | osmocom/osmocom-bb |
 
 Mirror quirks observed (October 2026):
 
@@ -34,8 +36,15 @@ Mirror quirks observed (October 2026):
   commit history back to 2009 is there. Release tags up to 1.9.0 are on the old-name mirror
   `osmocom/libosmo-sccp`. 2.0.x/2.1.x tags were in neither GitHub mirror when checked, and
   `libosmo-sccp-legacy` has no GitHub mirror. Fetch from `upstream` (gitea) if you need those tags.
-- None of the ten repos use Git LFS. Only osmo-trx has a nested submodule (`osmocom-bb`, pointing at
-  gitea.osmocom.org/phone-side/osmocom-bb), needed only for `--with-mstrx`.
+- None of the repos use Git LFS. Only osmo-trx has a nested submodule (`osmocom-bb`, pointing at
+  gitea.osmocom.org/phone-side/osmocom-bb), needed only for `--with-mstrx`. That is separate from the
+  top-level `apps/osmocom-bb` submodule.
+- osmocom-bb's official home is evidenced by its `debian/control` (`Vcs-Browser:
+  https://gitea.osmocom.org/phone-side/osmocom-bb`) and by osmo-trx's `.gitmodules`; it has no top-level
+  README or licence file (licences live in its subprojects). libosmo-gprs's README names
+  `https://gitea.osmocom.org/osmocom/libosmo-gprs.git`.
+- osmocom-bb is pinned to a commit, not a tag. `tools/create-forks.sh` proves such a pin is reachable
+  from the fork's `master` rather than from a tag.
 
 ## Why native forks of the GitHub mirrors
 
