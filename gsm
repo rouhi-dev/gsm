@@ -281,6 +281,12 @@ build_one() {
 	mkdir -p "$bld" "$BUILD_DIR/logs"; : > "$log"
 	checked_out "$n" || { fail "$n: not checked out (./gsm init)"; return 1; }
 	local flags="${CONFIGURE_FLAGS[$n]:-}" step
+	# Upstream's default ("auto") asks pkg-config for systemd's unit dir and installs *.service files
+	# there (/usr/lib/systemd/system), ignoring --prefix: fails without root, or pollutes the system with
+	# it. Keep them inside the prefix unless the user chose a location explicitly.
+	if grep -q 'systemdsystemunitdir' "$src/configure.ac" && [[ "$flags" != *systemdsystemunitdir* ]]; then
+		flags+="${flags:+ }--with-systemdsystemunitdir=$GSM_PREFIX/lib/systemd/system"
+	fi
 	printf '       %s: configure %s\n' "$n" "${flags:-(defaults)}"
 	run() { step="$1"; shift; echo "### $step: $*" >>"$log"; "$@" >>"$log" 2>&1; }
 	# shellcheck disable=SC2086
