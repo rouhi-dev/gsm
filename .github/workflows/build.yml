@@ -1,0 +1,54 @@
+name: build
+
+# Builds the pinned workspace from scratch on a stock Ubuntu runner, then runs the workspace checks
+# and the core-network smoke test. Triggered on every push/PR and manually (optionally with unit tests).
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      unit_tests:
+        description: "Also run each component's unit tests (make check)"
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4          # submodules are handled by ./gsm init
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential autoconf automake libtool pkg-config python3 sqlite3 \
+            libtalloc-dev libsctp-dev libsqlite3-dev libgnutls28-dev libmnl-dev \
+            libpcsclite-dev libusb-1.0-0-dev liburing-dev libortp-dev libfftw3-dev \
+            libuhd-dev libboost-dev
+
+      - name: Enable kernel SCTP (osmo-msc SGs listener, libosmocore SCTP tests)
+        run: sudo modprobe sctp || echo "::warning::sctp module unavailable; smoke test will report it"
+
+      - name: Initialise submodules (forks)
+        run: ./gsm init
+
+      - name: Check prerequisites
+        run: ./gsm doctor
+
+      - name: Build
+        run: ./gsm build ${{ inputs.unit_tests && '--check' || '' }}
+
+      - name: Verify workspace
+        run: ./gsm verify --build
+
+      - name: Core-network smoke test
+        run: tests/smoke-core.sh
+
+      - name: Upload build logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: _build/logs/
