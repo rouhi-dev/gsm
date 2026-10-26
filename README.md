@@ -20,16 +20,18 @@ gsm/
 │   ├── libosmocore         core utilities, GSM protocol codecs, VTY, CTRL, logging
 │   ├── libosmo-netif       stream/datagram sockets, RTP, IPA, SCTP helpers
 │   ├── libosmo-abis        Abis interface (A-bis over IP / E1), TRAU frames
-│   └── libosmo-sigtran     SCCP, M3UA, SUA, and the osmo-stp signalling transfer point
-├── apps/                   network elements
+│   ├── libosmo-sigtran     SCCP, M3UA, SUA, and the osmo-stp signalling transfer point
+│   └── libosmo-gprs        GPRS RLC/MAC, LLC, SNDCP, GMM, SM and CSN.1 (needed by osmocom-bb's layer23)
+├── apps/                   network elements, and the phone side
 │   ├── osmo-mgw            media gateway (RTP / Osmux / E1 TRAU), used by both BSC and MSC
 │   ├── osmo-hlr            home location register, SQLite subscriber DB, GSUP server
 │   ├── osmo-msc            mobile switching centre, VLR, SMSC, USSD
 │   ├── osmo-bsc            base station controller
 │   ├── osmo-bts            base transceiver station (osmo-bts-trx, osmo-bts-virtual, ...)
-│   └── osmo-trx            SDR transceiver for osmo-bts-trx (UHD, LimeSuite, bladeRF, IPC)
+│   ├── osmo-trx            SDR transceiver for osmo-bts-trx (UHD, LimeSuite, bladeRF, IPC)
+│   └── osmocom-bb          phone side: virtphy, mobile, trxcon, ccch_scan, osmocon, … (host programs only)
 ├── tools/create-forks.sh   create the GitHub forks and prove each contains its pinned commit (safe, idempotent)
-├── tests/smoke-core.sh     start the core network and check that the elements interconnect
+├── tests/smoke-core.sh     start the core network, check it interconnects; --with-ms adds a virtual phone
 ├── .github/workflows/      CI: init → build → verify → smoke test on Ubuntu
 └── docs/                   BUILD.md · UPSTREAM.md · NETWORK.md
 ```
@@ -38,7 +40,9 @@ gsm/
 
 ## Pinned versions
 
-All ten pins come from Osmocom's coordinated **August 2026 release** (tags dated 2026-08-20 / 21). Every
+The network-element pins come from Osmocom's coordinated **August 2026 release** (tags dated 2026-08-20 / 21).
+libosmo-gprs is at its latest release, and osmocom-bb, which has no matching release, is pinned to a commit
+(see below). Every
 component's `configure.ac` minimum versions are satisfied by the other pins; `./gsm verify` re-checks
 this from the sources on every run.
 
@@ -54,6 +58,14 @@ this from the sources on every run.
 | osmo-bsc | 1.15.0 | `1a2627f61f6a` | core ≥ 1.14.2, abis ≥ 2.2.0, netif ≥ 1.8.0, sigtran ≥ 2.3.0, mgcp-client ≥ 1.16.0 |
 | osmo-bts | 1.12.0 | `e8dac6c91a88` | core ≥ 1.14.2, abis/trau ≥ 2.2.0, netif ≥ 1.8.0 |
 | osmo-trx | 1.8.0 | `80c54268fc87` | libosmocore ≥ 1.10.0 |
+| libosmo-gprs | 0.2.1 | `8d844c5a5448` | libosmocore ≥ 1.10.0 |
+| osmocom-bb | commit (2026-10-19) | `3bbc334eee78` | libosmocore, libosmo-gprs |
+
+**Why osmocom-bb is pinned to a commit:** its only release (0.2.0) is from 2024. On 2026-10-19 its `master`
+switched trxcon to `libosmo-trx`, which only exists in osmo-trx *after* 1.8.0. `3bbc334e` is the last
+`master` commit before that switch, so it builds against the pinned osmo-trx. Moving osmocom-bb past it
+means moving osmo-trx past 1.8.0 too. Only its host programs are built; the phone firmware needs an ARM
+cross-toolchain.
 
 ### Build order
 
@@ -67,12 +79,14 @@ This order is derived from the pinned sources: each `configure.ac`'s `PKG_CHECK_
 | 2 | libosmo-netif | libosmocore (built **with** libsctp) |
 | 3 | libosmo-abis | libosmocore, libosmo-netif |
 | 4 | libosmo-sigtran | libosmocore, libosmo-netif |
-| 5 | osmo-mgw | libosmocore, libosmo-netif, libosmo-abis |
-| 6 | osmo-hlr | libosmocore, libosmo-abis |
-| 7 | osmo-msc | libosmocore, libosmo-netif, libosmo-abis, libosmo-sigtran, **osmo-mgw**, **osmo-hlr** |
-| 8 | osmo-bsc | libosmocore, libosmo-netif, libosmo-abis, libosmo-sigtran, **osmo-mgw** |
-| 9 | osmo-bts | libosmocore, libosmo-netif, libosmo-abis |
-| 10 | osmo-trx | libosmocore |
+| 5 | libosmo-gprs | libosmocore |
+| 6 | osmo-mgw | libosmocore, libosmo-netif, libosmo-abis |
+| 7 | osmo-hlr | libosmocore, libosmo-abis |
+| 8 | osmo-msc | libosmocore, libosmo-netif, libosmo-abis, libosmo-sigtran, **osmo-mgw**, **osmo-hlr** |
+| 9 | osmo-bsc | libosmocore, libosmo-netif, libosmo-abis, libosmo-sigtran, **osmo-mgw** |
+| 10 | osmo-bts | libosmocore, libosmo-netif, libosmo-abis |
+| 11 | osmo-trx | libosmocore |
+| 12 | osmocom-bb | libosmocore, libosmo-gprs (5 subprojects: osmocon, virt_phy, trxcon, gprsdecode, layer23) |
 
 Before compiling each component, `./gsm build` checks that every Osmocom library it needs resolves
 from `_install/` (never a system copy) at the pinned version. A failed or skipped dependency stops the
@@ -94,7 +108,7 @@ git clone --recurse-submodules https://github.com/rouhi-dev/gsm.git       # plai
 
 # 4. verify
 ./gsm verify --build        # pins == release tags, full history, version compat, binaries present
-tests/smoke-core.sh         # optional: start STP/HLR/MGW/MSC/BSC and check they interconnect
+tests/smoke-core.sh --with-ms   # start the core network + a virtual phone: attach, auth, SMS
 eval "$(./gsm env)"         # put _install/bin and its libraries on PATH / LD_LIBRARY_PATH
 ```
 

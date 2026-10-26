@@ -8,25 +8,37 @@
 #   MSC  -> HLR                GSUP client connected
 #   BTS  -> BSC                Abis/IP OML + RSL links up
 #
-# What it does NOT show: radio, a phone attaching, calls or SMS. See docs/NETWORK.md.
+# With --with-ms it also starts a virtual phone from osmocom-bb (virtphy + mobile, test SIM) on the
+# virtual Um interface of osmo-bts-virtual (UDP multicast, no radio) and checks, from the network side:
 #
-#   tests/smoke-core.sh [--keep]     (--keep leaves the processes running for manual inspection)
+#   MS   -> MSC/HLR            location update completed, with authentication REQUIRED (COMP128v1,
+#                              Ki provisioned in osmo-hlr) -- the MSC fetched auth tuples from the HLR
+#   MS   -> MS                 an SMS sent to its own MSISDN is submitted (MO), delivered back (MT)
+#                              and stored by the phone
+#
+# What it does NOT show: real radio, real phones, voice calls. See docs/NETWORK.md.
+#
+#   tests/smoke-core.sh [--with-ms] [--keep]   (--keep leaves the processes running for inspection)
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CFG="$ROOT/tests/smoke"
 PREFIX="${GSM_PREFIX:-$ROOT/_install}"
-KEEP=0; [[ "${1:-}" == --keep ]] && KEEP=1
+KEEP=0; MS=0
+for a in "$@"; do case "$a" in --keep) KEEP=1;; --with-ms) MS=1;;
+	*) echo "usage: $0 [--with-ms] [--keep]" >&2; exit 2;; esac; done
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/gsm-smoke.XXXXXX")"
 FAILS=0
 ok()   { printf '[ OK ] %s\n' "$*"; }
 fail() { printf '[FAIL] %s\n' "$*"; FAILS=$((FAILS+1)); }
 
-export PATH="$PREFIX/bin:$PATH" LD_LIBRARY_PATH="$PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export PATH="$PREFIX/bin:$PREFIX/sbin:$PATH" LD_LIBRARY_PATH="$PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
 # ---- preflight
 for b in osmo-stp osmo-hlr osmo-mgw osmo-msc osmo-bsc osmo-bts-virtual; do
 	command -v "$b" >/dev/null || { fail "$b not found in $PREFIX/bin -- run ./gsm build"; }
 done
+if (( MS )); then for b in virtphy mobile; do
+	command -v "$b" >/dev/null || fail "$b not found in $PREFIX/bin -- run ./gsm build osmocom-bb"; done; fi
 (( FAILS )) && exit 1
 # osmo-msc always opens an SCTP listener (SGs interface), so the kernel must support SCTP.
 if ! python3 -c 'import socket; socket.socket(socket.AF_INET, socket.SOCK_STREAM, 132)' 2>/dev/null &&
@@ -35,7 +47,7 @@ if ! python3 -c 'import socket; socket.socket(socket.AF_INET, socket.SOCK_STREAM
 	echo "       -> sudo modprobe sctp   (containers: the host kernel must provide it)"
 	exit 1
 fi
-for port in 2905 4222 2427 3002 3003 4239 4258 4243 4254 4242 4241; do
+for port in 2905 4222 2427 3002 3003 4239 4258 4243 4254 4242 4241 4247; do
 	if (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; then fail "port $port already in use on 127.0.0.1"; fi
 done
 (( FAILS )) && { echo "       -> stop the running Osmocom processes first"; exit 1; }
@@ -109,9 +121,44 @@ wait_for 30 "BSC: A-interface to MSC up (BSSMAP RESET acknowledged)" 4242 'BSSMA
 wait_for 30 "BSC: BTS 0 Abis/IP OML connected"        4242 'OML Link state: connected' "show bts 0"
 wait_for 30 "BSC: BTS 0 RSL up on its TRX"            4242 'where RSL is up: +1' "show bts 0"
 
-for n in stp hlr mgw msc bsc bts; do
-	kill -0 "${PIDS[$n]}" 2>/dev/null || fail "osmo-$n is no longer running"
+# counter <port> <name>: value of one rate counter (0 if absent)
+counter() { vty "$1" "show rate-counters" 2>/dev/null | awk -v n="$2:" '$1==n {print $2; f=1; exit} END {if(!f) print 0}'; }
+# wait_counter <timeout-s> <description> <port> <name> <minimum>
+wait_counter() {
+	local t="$1" desc="$2" port="$3" name="$4" min="$5" v=0 i
+	for ((i = 0; i < t; i++)); do v="$(counter "$port" "$name")"; (( v >= min )) && { ok "$desc ($name=$v)"; return 0; }; sleep 1; done
+	fail "$desc ($name=$v after ${t}s, expected >= $min)"; return 1
+}
+
+if (( MS && ! FAILS )); then
+	echo; echo "Virtual phone (osmocom-bb virtphy + mobile) on the virtual Um interface"
+	IMSI=001010000000101; MSISDN=5101
+	KI="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"; KI_SPACED="$(sed 's/../& /g; s/ $//' <<<"$KI")"
+	out="$(vty 4258 "subscriber imsi $IMSI create" "subscriber imsi $IMSI update msisdn $MSISDN" \
+		"subscriber imsi $IMSI update aud2g comp128v1 ki $KI" "subscriber imsi $IMSI show")"
+	grep -q "KI=$KI" <<<"$out" && ok "HLR: subscriber $IMSI provisioned (MSISDN $MSISDN, COMP128v1, random Ki)" ||
+		{ fail "HLR: could not provision subscriber"; printf '%s\n' "$out" | tail -n 6 | sed 's/^/       | /'; }
+	mkdir -p "$WORK/home/.osmocom/bb"
+	sed "s|@WORK@|$WORK|g; s|@IMSI@|$IMSI|; s|@KI_SPACED@|$KI_SPACED|" "$CFG/mobile.cfg.in" >"$WORK/mobile.cfg"
+	start virtphy virtphy -s "$WORK/l2"
+	sleep 1
+	( cd "$WORK" && HOME="$WORK/home" exec mobile -c "$WORK/mobile.cfg" >"$WORK/mobile.log" 2>&1 ) & PIDS[mobile]=$!
+	wait_for 60 "MS: camped and registered (MM idle, normal service)" 4247 'MM idle, normal service' "show ms 1"
+	wait_counter 10 "MSC: fetched auth tuples from the HLR (authentication required)" 4254 'gsup:rx:send_auth_info:res' 1
+	wait_counter 10 "MSC: location update completed"                 4254 'loc_update_resp:completed' 1
+	wait_for 10 "MSC: subscriber attached in the VLR"                4254 "IMSI: $IMSI" "show subscriber cache"
+	TEXT="gsm-smoke-$RANDOM$RANDOM"
+	vty 4247 "sms 1 $MSISDN $TEXT" >/dev/null
+	wait_counter 30 "MSC: SMS submitted by the MS (MO)"              4254 'sms:submitted' 1
+	for ((i = 0; i < 30; i++)); do grep -q "$TEXT" "$WORK/home/.osmocom/bb/sms.txt" 2>/dev/null && break; sleep 1; done
+	grep -q "$TEXT" "$WORK/home/.osmocom/bb/sms.txt" 2>/dev/null && ok "MS: SMS delivered back (MT) and stored by the phone" ||
+		fail "MS: SMS '$TEXT' not received by the phone within 30s"
+fi
+
+for n in "${!PIDS[@]}"; do
+	kill -0 "${PIDS[$n]}" 2>/dev/null || fail "$n is no longer running"
 done
 echo
 if (( FAILS )); then echo "Result: $FAILS failure(s)."; exit 1; fi
-echo "Result: OK -- core elements started and interconnected. (No radio, no MS: see docs/NETWORK.md.)"
+if (( MS )); then echo "Result: OK -- core interconnected; a virtual phone authenticated, registered and exchanged an SMS. (No real radio: see docs/NETWORK.md.)"
+else echo "Result: OK -- core elements started and interconnected. (No radio, no MS: see docs/NETWORK.md; try --with-ms.)"; fi
