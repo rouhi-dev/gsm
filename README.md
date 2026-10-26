@@ -28,7 +28,7 @@ gsm/
 │   ├── osmo-bsc            base station controller
 │   ├── osmo-bts            base transceiver station (osmo-bts-trx, osmo-bts-virtual, ...)
 │   └── osmo-trx            SDR transceiver for osmo-bts-trx (UHD, LimeSuite, bladeRF, IPC)
-├── tools/create-forks.sh   create/check the GitHub forks (safe, idempotent)
+├── tools/create-forks.sh   create the GitHub forks and prove each contains its pinned commit (safe, idempotent)
 ├── tests/smoke-core.sh     start the core network and check that the elements interconnect
 ├── .github/workflows/      CI: init → build → verify → smoke test on Ubuntu
 └── docs/                   BUILD.md · UPSTREAM.md · NETWORK.md
@@ -55,8 +55,28 @@ this from the sources on every run.
 | osmo-bts | 1.12.0 | `e8dac6c91a88` | core ≥ 1.14.2, abis/trau ≥ 2.2.0, netif ≥ 1.8.0 |
 | osmo-trx | 1.8.0 | `80c54268fc87` | libosmocore ≥ 1.10.0 |
 
-Build order (= the order in `components.conf`):
-`libosmocore → libosmo-netif → libosmo-abis → libosmo-sigtran → osmo-mgw → osmo-hlr → osmo-msc → osmo-bsc → osmo-bts → osmo-trx`
+### Build order
+
+This order is derived from the pinned sources: each `configure.ac`'s `PKG_CHECK_MODULES` against the
+`*.pc.in` files every component installs. `./gsm order` recomputes and prints it. `./gsm init` and
+`./gsm build` both follow it, and `build` refuses to run if `components.conf` ever violates it.
+
+| # | Component | Needs (built and installed first) |
+|---|---|---|
+| 1 | libosmocore | – (system: talloc, libsctp, …) |
+| 2 | libosmo-netif | libosmocore (built **with** libsctp) |
+| 3 | libosmo-abis | libosmocore, libosmo-netif |
+| 4 | libosmo-sigtran | libosmocore, libosmo-netif |
+| 5 | osmo-mgw | libosmocore, libosmo-netif, libosmo-abis |
+| 6 | osmo-hlr | libosmocore, libosmo-abis |
+| 7 | osmo-msc | libosmocore, libosmo-netif, libosmo-abis, libosmo-sigtran, **osmo-mgw**, **osmo-hlr** |
+| 8 | osmo-bsc | libosmocore, libosmo-netif, libosmo-abis, libosmo-sigtran, **osmo-mgw** |
+| 9 | osmo-bts | libosmocore, libosmo-netif, libosmo-abis |
+| 10 | osmo-trx | libosmocore |
+
+Before compiling each component, `./gsm build` checks that every Osmocom library it needs resolves
+from `_install/` (never a system copy) at the pinned version. A failed or skipped dependency stops the
+build there, and the tool names the command that resumes it.
 
 ## Quick start
 
@@ -69,6 +89,7 @@ git clone --recurse-submodules https://github.com/rouhi-dev/gsm.git       # plai
 ./gsm doctor
 
 # 3. build everything into ./_install (out-of-tree builds in ./_build, logs in ./_build/logs)
+#    programs are installed to ./_install/bin (osmo-msc, osmo-bsc, osmo-stp, ...), not the source trees
 ./gsm build                 # or: ./gsm build --check   (also runs each project's unit tests)
 
 # 4. verify
@@ -94,6 +115,7 @@ same either way.
 |---|---|
 | `./gsm init [--source fork\|mirror\|gitea] [--recursive]` | check out all submodules at their pins; add `upstream` / `mirror` remotes |
 | `./gsm status` | one line per component: pin, what is checked out, local modifications, origin |
+| `./gsm order` | dependency graph and build order, derived from the pinned sources |
 | `./gsm verify [--build]` | manifest ↔ .gitmodules, gitlink = release tag, non-shallow history, licence file, `configure.ac` version requirements vs. the other pins, build products |
 | `./gsm doctor` | host tools and system libraries required by the current configure flags |
 | `./gsm build [--check] [-j N] [component…]` | autoreconf → configure → make (→ make check) → make install, in dependency order; stops at the first failure and shows the relevant log lines |

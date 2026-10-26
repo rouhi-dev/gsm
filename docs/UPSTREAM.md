@@ -58,6 +58,22 @@ upstream  https://gitea.osmocom.org/<group>/<name>      official
 mirror    https://github.com/osmocom/<name>             GitHub mirror (fallback for fetches)
 ```
 
+## Creating the forks
+
+```bash
+tools/create-forks.sh --dry-run          # shows what it would do
+tools/create-forks.sh                     # creates missing forks, verifies all of them
+tools/create-forks.sh --push-missing-tags # also pushes a pinned release tag a fork lacks (needs ./gsm init)
+```
+
+The script reads the fork URLs from `.gitmodules` and refuses to run if `gh` is logged in as a different
+account. Each fork request's full output and exit code goes to the terminal and to
+`_build/logs/create-forks-<time>.log`. It waits for each fork to become reachable, then checks that the
+fork has the pinned release tag pointing at exactly the commit gsm pins. A commit lookup through the API
+wouldn't prove that, because GitHub resolves objects across the whole fork network. Only after
+`rouhi-dev/libosmo-sigtran` is reachable and has `master` does the script set it as the default branch,
+and then it re-reads the setting to confirm. Exit status is non-zero if any of this failed.
+
 ## Keeping forks in sync
 
 GitHub's **Sync fork** / `gh repo sync rouhi-dev/<name>` fast-forwards **only the default branch**. It
