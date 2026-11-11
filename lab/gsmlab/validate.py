@@ -64,6 +64,15 @@ def is_loopback(s):
     return bool(a and a.is_loopback)
 
 
+TEST_NETS = [ipaddress.ip_network(n) for n in ("192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24")]
+
+
+def is_placeholder(s):
+    """RFC 5737 documentation ranges: used for every example address in this repository."""
+    a = _ip(s)
+    return bool(a and a.version == 4 and any(a in n for n in TEST_NETS))
+
+
 def validate(lab, check_files=True):
     issues = []
     E = lambda code, path, msg, hint="": issues.append(Issue("error", code, path, msg, hint))
@@ -369,11 +378,36 @@ def validate(lab, check_files=True):
                               f"osmo-trx {phy} runs on {inst[phy].node}, its BTS on {i.node}: TRXD over the network "
                               "is supported but timing-sensitive")
 
-    # ------------------------------------------------------------ unused instances
-    used = {x for l in links(lab) for x in (l.client, l.server)} | set(bts_cells)
+    # ------------------------------------------------------------ instances outside every network
+    # An MSC/BSC/BTS/TRX config is generated FROM its place in a network (PLMN, peers, cell identity):
+    # without one it cannot run, so that is an error. STP/HLR/MGW can run stand-alone: warning.
+    used = {x for l in links(lab) for x in (l.client, l.server)} | set(bts_cells) | set(trx_users)
     for i in inst.values():
-        if i.id not in used and i.service not in ("virtphy",):
+        if i.id in used or i.service in ("virtphy", "mobile"):
+            continue
+        where = {"msc": "networks.<id>.msc", "bsc": "networks.<id>.bscs", "bts": "networks.<id>.bscs.<bsc>.bts",
+                 "trx": "a TRX's 'phy' in networks.<id>.bscs.<bsc>.bts.<bts>.trx"}.get(i.service)
+        if where:
+            E("INST-ORPHAN", f"instances.{i.id}",
+              f"{i.service} '{i.id}' is not part of any network, so its configuration cannot be generated",
+              f"reference it from {where}, or remove it (or set enabled: false and remove it from start)")
+        else:
             W("INST-UNUSED", f"instances.{i.id}", "not referenced by any network")
+
+    # ------------------------------------------------------------ placeholder addresses, exposed VTY/CTRL
+    for n in lab.nodes.values():
+        for what, ip in [("host", n.host), ("address", n.address)] + [(f"addresses.{k}", v) for k, v in n.named_addresses.items()]:
+            if is_placeholder(ip):
+                W("NODE-PLACEHOLDER", f"nodes.{n.id}.{what}",
+                  f"{ip} is a documentation address (RFC 5737 TEST-NET), i.e. a placeholder, not a real lab address",
+                  "put the real node data in a site override (-o site.local.yaml or <lab>.local.yaml)")
+    for i in inst.values():
+        for what, ep in (("vty", i.vty), ("ctrl", i.ctrl)):
+            if ep and _ip(ep.ip) and not is_loopback(ep.ip) and i.enabled and not i.config_file:
+                W("MGMT-EXPOSED", f"instances.{i.id}.{what}",
+                  f"{what.upper()} listens on {ep.ip}: Osmocom VTY/CTRL have no login, anyone who can reach it "
+                  "can reconfigure this element (and read subscriber keys from an HLR)",
+                  "keep VTY/CTRL on loopback (the default) and reach them through SSH")
 
     # ------------------------------------------------------------ collisions on each node
     issues += collisions(lab)

@@ -4,6 +4,7 @@ Remote access uses the system ssh client in BatchMode (keys / agent / ~/.ssh/con
 handles passwords. Every remote action is a small bash script whose text is visible with --verbose.
 """
 
+import ipaddress
 import shlex
 import subprocess
 import time
@@ -47,12 +48,17 @@ class NodeExec:
         rc, out, _ = self.run(f"cat {shlex.quote(path)} 2>/dev/null")
         return out if rc == 0 else None
 
-    def write(self, path, text, mode=None):
+    def write(self, path, text):
+        """Write a file readable only by its owner (0600; configs can hold SIM keys). The content goes over
+        stdin, never on a command line. The parent directory must exist (see mkdir_private)."""
         q = shlex.quote(path)
-        script = f"mkdir -p $(dirname {q}) && cat > {q}.tmp.$$ && mv -f {q}.tmp.$$ {q}"
-        if mode:
-            script += f" && chmod {mode} {q}"
-        self.run(script, input=text, check=True)
+        self.run(f"umask 077 && cat > {q}.tmp.$$ && chmod 600 {q}.tmp.$$ && mv -f {q}.tmp.$$ {q}",
+                 input=text, check=True)
+
+    def mkdir_private(self, *paths):
+        """Create directories (and parents) and make each named one 0700."""
+        qs = " ".join(shlex.quote(p) for p in paths)
+        self.run(f"umask 077 && mkdir -p {qs} && chmod 700 {qs}", check=True)
 
     # ------------------------------------------------------------ probes
     def probe(self, binaries=()):
@@ -101,20 +107,30 @@ echo "##host"; uname -srm; echo "$HOME"
 
     def tcp_reachable(self, ip, port, timeout=2):
         """Is ip:port accepting TCP connections, as seen from this node?"""
-        rc, _, _ = self.run(f"timeout {timeout} bash -c 'exec 3<>/dev/tcp/{ip}/{port}' 2>/dev/null", timeout=timeout + 10)
+        ip, port, timeout = str(ipaddress.ip_address(ip)), int(port), int(timeout)   # never free text in a shell
+        inner = shlex.quote(f"exec 3<>/dev/tcp/{ip}/{port}")
+        rc, _, _ = self.run(f"timeout {timeout} bash -c {inner} 2>/dev/null", timeout=timeout + 10)
         return rc == 0
 
     def vty(self, port, commands, ip="127.0.0.1", timeout=3):
-        """Run VTY commands on this node (python3 on the node), return the text output or None."""
-        rc, out, _ = self.run("python3 -c " + shlex.quote(VTY_CLIENT) + " " + " ".join(
-            shlex.quote(x) for x in [ip, str(port), str(timeout)] + list(commands)), timeout=timeout * (len(commands) + 3) + 10)
+        """Run VTY commands on this node (python3 on the node), return the text output or None.
+        The commands travel on stdin -- never as process arguments, so secrets in them (a SIM's Ki) do not
+        show up in `ps` on this machine or the node, nor in the ssh command line."""
+        commands = list(commands)
+        for c in commands:
+            if "\n" in c or "\r" in c:
+                raise ValueError("a VTY command must be a single line")
+        ip, port = str(ipaddress.ip_address(ip)), int(port)
+        rc, out, _ = self.run("python3 -c " + shlex.quote(VTY_CLIENT) + f" {ip} {port} {float(timeout)}",
+                              input="".join(c + "\n" for c in commands), timeout=timeout * (len(commands) + 3) + 10)
         return out if rc == 0 else None
 
 
 # Minimal VTY client (same protocol handling as tests/smoke-core.sh): waits for the prompt after each command.
 VTY_CLIENT = r"""
 import re, socket, sys, time
-ip, port, to, cmds = sys.argv[1], int(sys.argv[2]), float(sys.argv[3]), ["enable"] + sys.argv[4:]
+ip, port, to = sys.argv[1], int(sys.argv[2]), float(sys.argv[3])
+cmds = ["enable"] + [c for c in sys.stdin.read().split("\n") if c]
 try:
     s = socket.create_connection((ip, port), timeout=to)
 except OSError:

@@ -9,9 +9,12 @@
 lab:
   name: sdr-b210
 
+# PLACEHOLDER NODES: every 198.51.100.x address and the ssh user 'lab' below are RFC 5737 documentation
+# values, NOT real lab machines. Put the real node data in a site override (-o site.local.yaml or
+# <this file>.local.yaml); `gsm-lab validate` warns (NODE-PLACEHOLDER) while placeholders remain.
 nodes:
-  node-01: { host: 192.168.50.11, address: 192.168.50.11, ssh: { user: lab } }
-  node-02: { host: 192.168.50.12, address: 192.168.50.12, ssh: { user: lab } }
+  node-01: { host: 198.51.100.11, address: 198.51.100.11, ssh: { user: lab } }
+  node-02: { host: 198.51.100.12, address: 198.51.100.12, ssh: { user: lab } }
 
 plmns:
   test: { name: Test, mcc: "001", mnc: "01" }

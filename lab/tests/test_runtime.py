@@ -50,9 +50,14 @@ def have_cc():
 
 
 @unittest.skipUnless(have_cc(), "needs a C compiler for the stand-in binary")
-class RuntimeTests(unittest.TestCase):
+class FakeOsmocomCase(unittest.TestCase):
+    """Fixture: stand-in 'Osmocom' binaries in a private prefix, a private run dir and a private run
+    ledger (GSM_LAB_STATE), so tests never touch the real lab state."""
+
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="gsm-lab-rt-")
+        self._old_state = os.environ.get("GSM_LAB_STATE")
+        os.environ["GSM_LAB_STATE"] = os.path.join(self.tmp, "control")
         self.prefix = os.path.join(self.tmp, "prefix")
         os.makedirs(os.path.join(self.prefix, "bin"))
         src = os.path.join(self.tmp, "fake.c")
@@ -79,6 +84,10 @@ class RuntimeTests(unittest.TestCase):
                 except (OSError, ValueError, KeyError):
                     pass
         shutil.rmtree(self.tmp, ignore_errors=True)
+        if self._old_state is None:
+            os.environ.pop("GSM_LAB_STATE", None)
+        else:
+            os.environ["GSM_LAB_STATE"] = self._old_state
 
     def lab(self, raw=None, **node):
         raw = raw or base()
@@ -87,6 +96,25 @@ class RuntimeTests(unittest.TestCase):
         raw["nodes"]["n1"].update(node)
         return build(raw)
 
+    def ssh_shim(self, fail=False):
+        """Put a fake `ssh` first on PATH: it logs its full argument list and then runs the remote command
+        line locally (or fails like an unreachable host). Exercises gsm-lab's real remote command
+        construction, quoting and stdin handling -- NOT real SSH transport/authentication."""
+        shim_dir = os.path.join(self.tmp, "shim")
+        os.makedirs(shim_dir, exist_ok=True)
+        self.ssh_log = os.path.join(self.tmp, "ssh.log")
+        body = ('echo "ssh: connect to host $3 port 22: No route to host" >&2; exit 255\n' if fail else
+                f'for a; do last="$a"; done\nprintf "%s\\n" "$*" >> {self.ssh_log}\nexec bash -c "$last"\n')
+        with open(os.path.join(shim_dir, "ssh"), "w") as f:
+            f.write("#!/bin/bash\n" + body)
+        os.chmod(os.path.join(shim_dir, "ssh"), stat.S_IRWXU)
+        if not os.environ["PATH"].startswith(shim_dir):
+            self._old_path = os.environ["PATH"]
+            os.environ["PATH"] = shim_dir + os.pathsep + os.environ["PATH"]
+            self.addCleanup(lambda: os.environ.__setitem__("PATH", self._old_path))
+
+
+class RuntimeTests(FakeOsmocomCase):
     # ------------------------------------------------------------------------------------------
     def test_start_status_stop_cycle(self):
         lab = self.lab()
@@ -99,7 +127,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("listen m3ua 2905 tcp", rd(cfg))
         self.assertIn("==== gsm-lab start stp", rd(os.path.join(self.tmp, "run", "stp", "out.log")))
         self.assertTrue(rt.stop_one("stp").startswith("stopped"))
-        self.assertEqual(rt.status("stp")[0], "dead")                       # state file kept, process gone
+        self.assertIn(rt.status("stp")[0], ("dead", "stopped"))             # process gone, never "running"
         self.assertFalse(os.path.exists(f"/proc/{pid}"))
 
     def test_never_kills_a_process_it_did_not_start(self):
@@ -155,7 +183,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(status["stp"], "ok")
         self.assertNotIn("bsc", status)                      # not requested, not a dependency
         rt.stop()
-        self.assertEqual(rt.status("stp")[0], "dead")
+        self.assertNotEqual(rt.status("stp")[0], "running")
 
     def test_dry_run_changes_nothing(self):
         lab = self.lab()

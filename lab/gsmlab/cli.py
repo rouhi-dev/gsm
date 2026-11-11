@@ -7,7 +7,8 @@ import subprocess
 import sys
 
 from . import health, model, nodes, render, repo, topology, validate
-from .runtime import Runtime
+from .render import RenderError
+from .runtime import Ledger, LedgerError, Runtime
 
 DEFAULT_FILE = os.environ.get("GSM_LAB_FILE", os.path.join(model.REPO_ROOT, "lab", "lab.yaml"))
 
@@ -26,10 +27,13 @@ def load(args, strict=True):
     return lab
 
 
-def resolve(lab, ids):
+def resolve(lab, ids, recorded=False):
+    """recorded=True also accepts instances that are only in the run ledger (removed from the lab file
+    while running), so they can still be inspected and stopped."""
+    known = set(lab.instances) | (set(Ledger(lab.name).all()) if recorded else set())
     for i in ids or []:
-        if i not in lab.instances:
-            sys.exit(f"[FAIL] unknown instance '{i}' (have: {', '.join(lab.instances)})")
+        if i not in known:
+            sys.exit(f"[FAIL] unknown instance '{i}' (have: {', '.join(sorted(known))})")
     return ids or None
 
 
@@ -149,7 +153,7 @@ def c_start(args):
 
 def c_stop(args):
     lab = load(args, strict=False)
-    Runtime(lab, backend=args.backend).stop(resolve(lab, args.instances), with_dependents=not args.no_deps)
+    Runtime(lab, backend=args.backend).stop(resolve(lab, args.instances, recorded=True), with_dependents=not args.no_deps)
     return 0
 
 
@@ -173,14 +177,14 @@ def _print_checks(checks):
 def c_status(args):
     lab = load(args, strict=False)
     rt = Runtime(lab)
-    bad = _print_checks(health.check(rt, resolve(lab, args.instances), levels=("process", "vty")))
+    bad = _print_checks(health.check(rt, resolve(lab, args.instances, recorded=True), levels=("process", "vty")))
     return 1 if bad else 0
 
 
 def c_health(args):
     lab = load(args, strict=False)
     rt = Runtime(lab)
-    bad = _print_checks(health.check(rt, resolve(lab, args.instances)))
+    bad = _print_checks(health.check(rt, resolve(lab, args.instances, recorded=True)))
     if args.e2e:
         print()
         bad += sum(not c.ok for c in health.e2e(rt, timeout=args.timeout))
@@ -190,12 +194,14 @@ def c_health(args):
 
 def c_logs(args):
     lab = load(args, strict=False)
-    resolve(lab, [args.instance])
+    resolve(lab, [args.instance], recorded=True)
     rt = Runtime(lab)
     if args.follow:
-        l = render.render(lab, args.instance)
-        ex = rt.ex[l.node]
-        return subprocess.call(ex._cmd(f"tail -n {args.lines} -F {shlex.quote(l.workdir + '/out.log')}"))
+        loc = rt.ledger.get(args.instance) or rt.placement(args.instance)   # where it runs (ran)
+        if loc is None:
+            sys.exit(f"[FAIL] {args.instance} is not placed on a node")
+        ex = rt.exec_for(loc)
+        return subprocess.call(ex._cmd(f"tail -n {int(args.lines)} -F {shlex.quote(loc['workdir'] + '/out.log')}"))
     print(rt.log_tail(args.instance, args.lines), end="")
     return 0
 
@@ -263,7 +269,8 @@ def c_tmuxinator(args):
             n = lab.nodes[i.node]
             cmd = f"{base} exec {iid}"
             if not n.local:
-                cmd = f"ssh -t {(n.ssh_user + '@') if n.ssh_user else ''}{n.host} {shlex.quote(cmd)}"
+                target = shlex.quote(f"{n.ssh_user}@{n.host}" if n.ssh_user else n.host)
+                cmd = f"ssh -t -p {int(n.ssh_port)} {target} {shlex.quote(cmd)}"
             panes.append(f"        - sleep {0 if win == 'core' else 3 if win == 'ran' else 8}; {cmd}")
         if panes:
             y += [f"  - {win}:", "      layout: tiled", "      panes:"] + panes
@@ -294,20 +301,21 @@ def c_exec(args):
     if not lab.nodes[i.node].local:
         sys.exit(f"[FAIL] {args.instance} is placed on {i.node}; run this on that node")
     rt = Runtime(lab)
+    reason = rt.refuse_reason(args.instance)
+    if reason:
+        sys.exit(f"[FAIL] {args.instance}: {reason}")
     st, pid = rt.status(args.instance)
     if st == "running":
         sys.exit(f"[FAIL] {args.instance} already running (pid {pid}); `gsm-lab stop {args.instance}` first")
     l = render.render(lab, args.instance)
-    for d in [""] + l.dirs:
-        os.makedirs(os.path.join(l.workdir, d), exist_ok=True)
+    os.umask(0o077)                     # files the program creates (hlr.db, sockets, logs) stay private
+    rt.prepare_dirs(l)
     note = rt.place_config(l)
     print(f"[gsm-lab] {args.instance}: config {note}; exec {' '.join(l.argv)}", flush=True)
-    import json
     os.chdir(l.workdir)
-    with open(os.path.join(l.workdir, "state.json"), "w") as f:
-        st = open(f"/proc/{os.getpid()}/stat").read().rsplit(")", 1)[1].split()[19]
-        json.dump({"pid": os.getpid(), "starttime": st, "argv": l.argv, "backend": "exec", "lab": lab.name,
-                   "instance": args.instance}, f)
+    with open(f"/proc/{os.getpid()}/stat") as f:
+        starttime = f.read().rsplit(")", 1)[1].split()[19]
+    rt.record(args.instance, l, os.getpid(), starttime, backend="exec")   # this pid becomes the program
     os.execvpe(l.argv[0], l.argv, {**os.environ, **l.env})
 
 
@@ -411,7 +419,7 @@ def main(argv=None):
         sys.exit(f"[FAIL] lab file {args.file} not found (use -f FILE or set GSM_LAB_FILE; examples in lab/topologies/)")
     try:
         return args.fn(args) or 0
-    except nodes.NodeError as e:
+    except (nodes.NodeError, RenderError, LedgerError, model.LabError) as e:
         sys.exit(f"[FAIL] {e}")
     except KeyboardInterrupt:
         return 130

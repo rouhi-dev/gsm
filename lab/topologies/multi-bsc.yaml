@@ -14,12 +14,15 @@ lab:
   name: multi-bsc
   deployment: bsc-per-node          # default placement; -d overrides
 
-nodes:                              # physical BBUs -- connection data only, no roles
+# PLACEHOLDER NODES: every 198.51.100.x address and the ssh user 'lab' below are RFC 5737 documentation
+# values, NOT real lab machines. Put the real node data in a site override (-o site.local.yaml or
+# <this file>.local.yaml); `gsm-lab validate` warns (NODE-PLACEHOLDER) while placeholders remain.
+nodes:                              # BBU nodes -- connection data only, no roles
   # 'addr2' is a second address on the node, used when two BSCs (or two HLRs) share it: their Abis/IP
   # (3002/3003) and GSUP (4222) ports cannot be changed, so co-located ones need different IPs.
-  node-01: { host: 192.168.50.11, address: 192.168.50.11, addresses: { addr2: 192.168.50.21 }, ssh: { user: lab } }
-  node-02: { host: 192.168.50.12, address: 192.168.50.12, addresses: { addr2: 192.168.50.22 }, ssh: { user: lab } }
-  node-03: { host: 192.168.50.13, address: 192.168.50.13, addresses: { addr2: 192.168.50.23 }, ssh: { user: lab } }
+  node-01: { host: 198.51.100.11, address: 198.51.100.11, addresses: { addr2: 198.51.100.21 }, ssh: { user: lab } }
+  node-02: { host: 198.51.100.12, address: 198.51.100.12, addresses: { addr2: 198.51.100.22 }, ssh: { user: lab } }
+  node-03: { host: 198.51.100.13, address: 198.51.100.13, addresses: { addr2: 198.51.100.23 }, ssh: { user: lab } }
 
 plmns:
   operator_a: { name: Operator A, mcc: "001", mnc: "01" }

@@ -160,7 +160,6 @@ class Cell:                      # a BTS as seen by its BSC (logical) -- the pro
     bsic: int
     unit_id: int
     trx: list
-    opts: dict
 
 
 @dataclass
@@ -277,7 +276,7 @@ def _str_code(lab, path, v):
 
 
 def _endpoint(lab, path, spec, default_ip, default_port, proto):
-    """Accept `port: N`, `{ip:, port:}` or `"ip:port"`."""
+    """Accept `port: N`, `{ip:, port:}` or `"ip:port"`. The protocol is a property of the service."""
     if spec is None:
         return Endpoint(default_ip, default_port, proto)
     if isinstance(spec, int) and not isinstance(spec, bool):
@@ -286,26 +285,77 @@ def _endpoint(lab, path, spec, default_ip, default_port, proto):
         ip, _, port = spec.rpartition(":")
         return Endpoint(ip, _int(lab, path, port, default_port), proto)
     if isinstance(spec, dict):
-        _known(lab, path, spec, {"ip", "bind", "port", "proto"})
-        return Endpoint(spec.get("ip", spec.get("bind", default_ip)),
-                        _int(lab, f"{path}.port", spec.get("port"), default_port),
-                        spec.get("proto", proto))
+        _known(lab, path, spec, {"ip", "port"})
+        return Endpoint(spec.get("ip", default_ip), _int(lab, f"{path}.port", spec.get("port"), default_port), proto)
     _err(lab, path, f"endpoint must be a port, 'ip:port' or {{ip:, port:}}, got {spec!r}")
     return Endpoint(default_ip, default_port, proto)
 
 
 # ---------------------------------------------------------------- normalisation
-INSTANCE_KEYS = {"service", "node", "variant", "bind", "vty", "ctrl", "ports", "raw", "args", "config_file",
-                 "enabled", "log_level",
-                 # service-specific (kept in opts)
-                 "point_code", "transport", "m3ua_local_port", "rtp_range", "rtp_bind", "endpoints",
-                 "db", "subscribers", "sms_db", "virtual_um", "virtphy", "sims", "dev_args", "trx_options",
-                 "remote"}
+# Keys every config-file based instance accepts, then what each service adds. Anything else is rejected:
+# a key gsm-lab does not implement must never be accepted and silently ignored.
+GENERIC_KEYS = {"service", "node", "bind", "raw", "args", "config_file", "enabled", "log_level"}
+SERVICE_KEYS = {
+    "stp": GENERIC_KEYS | {"vty", "ports", "point_code", "transport"},
+    "hlr": GENERIC_KEYS | {"vty", "ctrl", "ports", "db", "subscribers"},
+    "mgw": GENERIC_KEYS | {"vty", "ctrl", "ports", "rtp_range", "rtp_bind", "endpoints"},
+    "msc": GENERIC_KEYS | {"vty", "ctrl", "ports", "point_code", "m3ua_local_port"},
+    "bsc": GENERIC_KEYS | {"vty", "ctrl", "ports", "point_code", "m3ua_local_port"},
+    "bts": GENERIC_KEYS | {"vty", "ctrl", "variant", "virtual_um", "trx_options"},
+    "trx": GENERIC_KEYS | {"vty", "ctrl", "ports", "variant", "dev_args", "trx_options"},
+    "mobile": GENERIC_KEYS | {"vty", "virtphy", "sims"},
+    "virtphy": {"service", "node", "args", "enabled", "virtual_um"},   # no config file, no VTY
+}
+VARIANT_KEYS = {("bts", "virtual"): {"virtual_um"}, ("bts", "trx"): {"trx_options"}}   # only for that variant
+VIRT_UM_KEYS = {"bts": {"ms_group", "ms_port", "bts_group", "bts_port", "netdev", "ttl"},
+                "virtphy": {"ms_group", "ms_port", "bts_group", "netdev", "ttl"}}     # virtphy: one port (-x)
+SIM_KEYS = {"imsi", "ki", "msisdn", "imei", "virtphy"}
+SUBSCRIBER_KEYS = {"imsi", "ki", "msisdn"}
+LOG_LEVELS = {"debug", "info", "notice", "error", "fatal"}
+ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,62}")
+HOST_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9.:_-]*")
+USER_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*")
+VTY_TOKEN_RE = re.compile(r"[a-z][a-z0-9-]*")
 NETWORK_KEYS = {"plmn", "stp", "msc", "hlr", "mgw", "bscs", "short_name", "long_name", "authentication",
                 "encryption", "routing"}
-CELL_KEYS = {"band", "lac", "ci", "bsic", "unit_id", "trx", "number", "neighbors", "opts"}
+CELL_KEYS = {"band", "lac", "ci", "bsic", "unit_id", "trx", "number"}
 TRX_KEYS = {"arfcn", "phy", "channel", "nominal_power", "max_power_red", "timeslots"}
 DEFAULT_TS = ["CCCH+SDCCH4", "SDCCH8", "TCH/F", "TCH/F", "TCH/F", "TCH/F", "TCH/F", "TCH/F"]
+
+
+_LINE_BREAKS = {"\x85", "\u2028", "\u2029"}
+
+
+def _bad_chars(text, allow=""):
+    return sorted({repr(c) for c in text if (ord(c) < 0x20 or ord(c) == 0x7f or c in _LINE_BREAKS) and c not in allow})
+
+
+def _scan_chars(lab, path, v):
+    """Every value may end up in a generated Osmocom config (one VTY command per line) or in a shell
+    command: reject control characters and line breaks everywhere. Only `instances.<id>.raw` -- verbatim
+    VTY by design -- may contain newlines (and tabs)."""
+    if isinstance(v, dict):
+        for k, x in v.items():
+            kp = f"{path}.{k}" if path else str(k)
+            bad = _bad_chars(str(k))
+            if bad:
+                _err(lab, path or "<top>", f"key {str(k)!r} contains control characters {', '.join(bad)}")
+            _scan_chars(lab, kp, x)
+    elif isinstance(v, list):
+        for n, x in enumerate(v):
+            _scan_chars(lab, f"{path}[{n}]", x)
+    elif isinstance(v, str):
+        allow = "\n\t" if re.fullmatch(r"instances\.[^.]+\.raw", path) else ""
+        bad = _bad_chars(v, allow)
+        if bad:
+            _err(lab, path, f"contains control characters / line breaks {', '.join(bad)}: values are written into "
+                            "Osmocom configs and shell commands" + ("" if allow else "; multi-line VTY belongs in instances.<id>.raw"))
+
+
+def _check_id(lab, path, ident):
+    if not isinstance(ident, str) or not ID_RE.fullmatch(ident):
+        _err(lab, path, f"identifier {ident!r} must be 1-63 letters, digits, '.', '_' or '-' (starting with a letter "
+                        "or digit): it is used in file names, VTY object names and shell commands")
 
 
 def build(raw, deployment=None):
@@ -317,6 +367,7 @@ def build(raw, deployment=None):
     lab = Lab(name=str(lab_sec.get("name", "lab")), sources=sources, backend=lab_sec.get("backend", "proc"))
     if bad_lab_sec:
         _err(lab, "lab", "must be a mapping")
+    _scan_chars(lab, "", {"lab": lab_sec, **raw})
     for k in [k for k in raw if str(k).startswith("x-")]:   # free-form keys for YAML anchors (&name)
         raw.pop(k)
     _known(lab, "", raw, {"nodes", "plmns", "instances", "networks", "deployments"})
@@ -330,14 +381,22 @@ def build(raw, deployment=None):
     # ---- nodes
     for nid, n in _as_dict(lab, "nodes", raw.get("nodes")).items():
         p = f"nodes.{nid}"
+        _check_id(lab, p, nid)
         n = _as_dict(lab, p, n)
         _known(lab, p, n, {"host", "address", "mgmt_address", "ssh", "home", "prefix", "run_dir", "addresses",
-                           "description"})
+                           "description"})   # description: free text for humans, never used
         host = str(n.get("host", "localhost"))
+        if not HOST_RE.fullmatch(host):    # also stops option injection into ssh (a host starting with '-')
+            _err(lab, f"{p}.host", f"'{host}' is not a valid host name or address")
         local = host in LOCAL_HOSTS
         ssh = _as_dict(lab, f"{p}.ssh", n.get("ssh"))
         _known(lab, f"{p}.ssh", ssh, {"user", "port", "options"})
         user = ssh.get("user") or (getpass.getuser() if local else None)
+        if ssh.get("user") is not None and not USER_RE.fullmatch(str(ssh["user"])):
+            _err(lab, f"{p}.ssh.user", f"'{ssh['user']}' is not a valid user name")
+        if not isinstance(ssh.get("options", []), list):
+            _err(lab, f"{p}.ssh.options", "must be a list of ssh arguments, e.g. [-i, ~/.ssh/lab_key]")
+            ssh["options"] = []
         home = n.get("home") or (os.path.expanduser("~") if local else f"/home/{user or getpass.getuser()}")
         run_dir = n.get("run_dir", lab_sec.get("run_dir", "~/.local/state/gsm-lab/{lab}"))
         run_dir = run_dir.replace("{lab}", lab.name)
@@ -355,6 +414,7 @@ def build(raw, deployment=None):
     # ---- plmns
     for pid, pl in _as_dict(lab, "plmns", raw.get("plmns")).items():
         p = f"plmns.{pid}"
+        _check_id(lab, p, pid)
         pl = _as_dict(lab, p, pl)
         _known(lab, p, pl, {"name", "mcc", "mnc", "mnc_length"})
         mcc, mnc = _str_code(lab, f"{p}.mcc", pl.get("mcc")), _str_code(lab, f"{p}.mnc", pl.get("mnc"))
@@ -363,6 +423,7 @@ def build(raw, deployment=None):
 
     # ---- deployments (placement overrides)
     for did, d in _as_dict(lab, "deployments", raw.get("deployments")).items():
+        _check_id(lab, f"deployments.{did}", did)
         d = _as_dict(lab, f"deployments.{did}", d)
         for iid, v in d.items():   # 'node-01' or {node: node-01, bind: <ip or node address name>}
             if isinstance(v, dict):
@@ -381,13 +442,17 @@ def build(raw, deployment=None):
     # ---- instances
     for iid, i in _as_dict(lab, "instances", raw.get("instances")).items():
         p = f"instances.{iid}"
+        _check_id(lab, p, iid)
         i = _as_dict(lab, p, i)
-        _known(lab, p, i, INSTANCE_KEYS)
         svc_name = i.get("service")
         svc = SERVICES.get(svc_name)
         if not svc:
             _err(lab, f"{p}.service", f"unknown service {svc_name!r} (one of: {', '.join(SERVICES)})")
             continue
+        allowed = SERVICE_KEYS[svc_name]
+        for k in i:
+            if k not in allowed:
+                _err(lab, f"{p}.{k}", f"not supported for service {svc_name} (allowed: {', '.join(sorted(allowed))})")
         place = placement.get(iid)
         place = place if isinstance(place, dict) else ({"node": place} if place else {})
         node = place.get("node", i.get("node"))
@@ -419,12 +484,33 @@ def build(raw, deployment=None):
             variant = variant or next(iter(svc.variants))
             if variant not in svc.variants:
                 _err(lab, f"{p}.variant", f"unknown variant {variant!r} for {svc_name} (one of: {', '.join(svc.variants)})")
+        for (vs, vv), keys in VARIANT_KEYS.items():
+            if vs == svc_name and vv != variant:
+                for k in keys & set(i):
+                    _err(lab, f"{p}.{k}", f"only used by {svc_name} variant '{vv}', this instance is '{variant}'")
+        lvl = i.get("log_level", "notice")
+        if lvl not in LOG_LEVELS:
+            _err(lab, f"{p}.log_level", f"must be one of {', '.join(sorted(LOG_LEVELS))}, got {lvl!r}")
+        if svc_name == "stp" and i.get("transport", "tcp") not in ("tcp", "sctp"):
+            _err(lab, f"{p}.transport", "must be 'tcp' or 'sctp'")
+        if svc_name == "bts" and "trx_options" in i:
+            _known(lab, f"{p}.trx_options", _as_dict(lab, f"{p}.trx_options", i["trx_options"]), {"local_base_port"})
+        if svc_name == "trx":
+            for k, v in _as_dict(lab, f"{p}.trx_options", i.get("trx_options")).items():
+                if not VTY_TOKEN_RE.fullmatch(str(k)):
+                    _err(lab, f"{p}.trx_options.{k}", "must be an osmo-trx 'trx' node command name (e.g. clock-ref)")
+                if isinstance(v, (dict, list)):
+                    _err(lab, f"{p}.trx_options.{k}", "value must be a single word or number")
+        for k, sim in enumerate(i.get("sims") or []):
+            _known(lab, f"{p}.sims[{k}]", _as_dict(lab, f"{p}.sims[{k}]", sim), SIM_KEYS)
+        for k, sub in enumerate(i.get("subscribers") or []):
+            _known(lab, f"{p}.subscribers[{k}]", _as_dict(lab, f"{p}.subscribers[{k}]", sub), SUBSCRIBER_KEYS)
         opts = {k: v for k, v in i.items() if k not in
                 {"service", "node", "variant", "bind", "vty", "ctrl", "ports", "raw", "args", "config_file",
                  "enabled", "log_level"}}
         if svc_name == "bts" and variant == "virtual" or svc_name == "virtphy":
             vu = _as_dict(lab, f"{p}.virtual_um", opts.get("virtual_um"))
-            _known(lab, f"{p}.virtual_um", vu, set(VIRT_UM_DEFAULTS) | {"netdev", "ttl"})
+            _known(lab, f"{p}.virtual_um", vu, VIRT_UM_KEYS[svc_name])
             opts["virtual_um"] = {**VIRT_UM_DEFAULTS, **vu}
         lab.instances[iid] = Instance(
             iid, svc_name, node, variant, bind, vty, ctrl, ports, opts,
@@ -437,6 +523,7 @@ def build(raw, deployment=None):
     # ---- networks
     for nid, n in _as_dict(lab, "networks", raw.get("networks")).items():
         p = f"networks.{nid}"
+        _check_id(lab, p, nid)
         n = _as_dict(lab, p, n)
         _known(lab, p, n, NETWORK_KEYS)
         bscs = []
@@ -466,8 +553,7 @@ def build(raw, deployment=None):
                 cells.append(Cell(cid, bid, _int(lab, f"{cp}.number", c.get("number"), num),
                                   str(c.get("band", "DCS1800")), _int(lab, f"{cp}.lac", c.get("lac")),
                                   _int(lab, f"{cp}.ci", c.get("ci")), _int(lab, f"{cp}.bsic", c.get("bsic"), 63),
-                                  _int(lab, f"{cp}.unit_id", c.get("unit_id")), trxs,
-                                  _as_dict(lab, f"{cp}.opts", c.get("opts"))))
+                                  _int(lab, f"{cp}.unit_id", c.get("unit_id")), trxs))
             bscs.append(BscLink(bid, b.get("mgw") or n.get("mgw"), b.get("ran_plmn"), cells))
         lab.networks[nid] = Network(
             nid, n.get("plmn"), n.get("stp"), n.get("msc"), n.get("hlr"), n.get("mgw"), bscs,

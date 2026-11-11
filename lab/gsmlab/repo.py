@@ -15,12 +15,36 @@ import subprocess
 
 from .model import REPO_ROOT
 
-ENV = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_SSH_COMMAND": "ssh -o BatchMode=yes -o ConnectTimeout=8"}
+BATCH_SSH = "ssh -o BatchMode=yes -o ConnectTimeout=8"
+
+
+def user_ssh_command(cwd=None):
+    """The user's own SSH command for git, if any: $GIT_SSH_COMMAND, $GIT_SSH or core.sshCommand
+    (any config level that applies in cwd)."""
+    for var in ("GIT_SSH_COMMAND", "GIT_SSH"):
+        if os.environ.get(var):
+            return os.environ[var]
+    try:
+        p = subprocess.run(["git", "config", "--get", "core.sshCommand"], cwd=cwd or REPO_ROOT,
+                           capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return p.stdout.strip() or None
+
+
+def git_env(cwd=None):
+    """Environment for git: never prompt on a terminal. Make SSH non-interactive (BatchMode) ONLY when the
+    user has no SSH command of their own -- an existing core.sshCommand / GIT_SSH(_COMMAND) is respected
+    (GIT_SSH_COMMAND would otherwise take precedence over it)."""
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    if not user_ssh_command(cwd):
+        env["GIT_SSH_COMMAND"] = BATCH_SSH
+    return env
 
 
 def git(*args, cwd=REPO_ROOT, timeout=60):
     try:
-        p = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, timeout=timeout, env=ENV)
+        p = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, timeout=timeout, env=git_env(cwd))
         return p.returncode, p.stdout.strip(), p.stderr.strip()
     except subprocess.TimeoutExpired:
         return 124, "", f"timed out after {timeout}s"
@@ -91,7 +115,7 @@ def auth_report(out=print):
 
 
 def gsm(*args, timeout=None):
-    p = subprocess.run([os.path.join(REPO_ROOT, "gsm"), *args], cwd=REPO_ROOT, env=ENV, timeout=timeout)
+    p = subprocess.run([os.path.join(REPO_ROOT, "gsm"), *args], cwd=REPO_ROOT, env=git_env(REPO_ROOT), timeout=timeout)
     return p.returncode
 
 

@@ -19,8 +19,15 @@ Contents: [1 Architecture](#1-architecture) · [2 Logical vs physical](#2-logica
 [10 Running and monitoring](#10-starting-stopping-monitoring) · [11 Adding a node](#11-adding-a-physical-node) ·
 [12 Moving services](#12-moving-services-between-nodes) · [13 New PLMN](#13-creating-a-new-plmn) ·
 [14 Second BSC](#14-a-second-bsc-on-an-existing-msc) · [15 Troubleshooting](#15-troubleshooting) ·
-[What Osmocom supports](#what-osmocom-supports) · [Verification status](#verification-status) ·
+[What Osmocom supports](#what-osmocom-supports) · [Security](#security) ·
+[Open architecture items](#open-architecture-items) · [Verification status](#verification-status) ·
 [Schema reference](#schema-reference)
+
+> **Placeholder addresses.** Every non-loopback address in this guide and in `lab/topologies/` comes
+> from the RFC 5737 documentation ranges (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`), and
+> the SSH user `lab` is a placeholder too. None of them is a real lab machine. Put the real node data
+> in a site override (`-o site.local.yaml` or `<lab>.local.yaml`, never committed). `gsm-lab validate`
+> warns with `NODE-PLACEHOLDER` while a placeholder address is still in use.
 
 ---
 
@@ -70,11 +77,11 @@ gsm-lab -f lab/topologies/multi-bsc.yaml -d bsc-per-node topology # core | BSC+B
 ## 3. Nodes
 
 ```yaml
-nodes:
+nodes:            # PLACEHOLDER values (RFC 5737), replace with the real node
   node-02:
-    host: 192.168.50.12          # 'localhost' = run locally; anything else = SSH
-    address: 192.168.50.12       # address other nodes use to reach services here (default bind)
-    addresses: { addr2: 192.168.50.22 }   # optional extra addresses, by name
+    host: 198.51.100.12          # 'localhost' = run locally; anything else = SSH
+    address: 198.51.100.12       # address other nodes use to reach services here (default bind)
+    addresses: { addr2: 198.51.100.22 }   # optional extra addresses, by name
     mgmt_address: 127.0.0.1      # default bind of VTY/CTRL (default 127.0.0.1)
     ssh: { user: lab, port: 22, options: [-i, ~/.ssh/lab_ed25519] }
     prefix: /opt/osmocom         # Osmocom install prefix on that node (default: this repo's _install)
@@ -82,10 +89,14 @@ nodes:
     home: /home/lab              # used to expand ~ for remote nodes (default /home/<ssh user>)
 ```
 
-* SSH runs in `BatchMode`: keys or agent only. gsm-lab never asks for or stores passwords. Test with
-  `gsm-lab nodes --status`.
+* SSH runs in `BatchMode`: keys or agent only. gsm-lab never asks for or stores passwords, and an
+  unknown host key fails the connection instead of being accepted. Add each node's host key first (see
+  [Security](#security)). Test with `gsm-lab nodes --status`.
 * Per instance on the node: `<run_dir>/<instance>/` holds `<instance>.cfg` (generated), `state.json`
-  (pid, start time, argv), `out.log`, and the instance's own files (`hlr.db`, `sms.db`, sockets).
+  (pid, start time, argv), `out.log`, and the instance's own files (`hlr.db`, `sms.db`, sockets). The
+  run directory and every instance directory are `0700`, generated files `0600`, and programs run with
+  `umask 077`: configs and `hlr.db` contain SIM keys.
+* `description:` is free text for humans; gsm-lab never uses it.
 * `gsm-lab doctor` probes every node for binaries, addresses, free ports, kernel SCTP, python3 and tmux.
 
 ## 4. PLMNs
@@ -246,7 +257,7 @@ submodule, `apps/osmo-trx/osmocom-bb` (gitea.osmocom.org, only for `./gsm init -
 | Command | Effect |
 |---|---|
 | `start [ids] [--dry-run] [--no-deps] [--backend tmux]` | validate → preflight → render → start in dependency order; waits for each VTY. A failure blocks only that instance's dependants. Named instances pull in their dependencies (unless `--no-deps`). HLR subscribers for all SIMs are provisioned. |
-| `stop [ids]` | stops dependants first. Signals a pid only if `/proc/<pid>` still shows the program **and start time** gsm-lab recorded. `mobile` gets SIGINT (clean IMSI detach); the others SIGTERM, then SIGKILL after 5 s. A full stop also removes the lab's tmux session. |
+| `stop [ids]` | stops dependants first, **on the node where each instance was started** (run ledger, below). Signals a pid only if `/proc/<pid>` still shows the program **and start time** gsm-lab recorded. `mobile` gets SIGINT (clean IMSI detach); the others SIGTERM, then SIGKILL after 5 s. A full stop also stops instances that were removed from the lab file while running, and removes the lab's tmux session. |
 | `restart ids` | stop + start just these |
 | `status [ids]` | levels 1–2: process, VTY |
 | `health [ids] [--e2e]` | levels 1–3, plus level 4 with `--e2e` (below) |
@@ -263,6 +274,19 @@ and an SMS to its own MSISDN goes out through the MSC and comes back to the phon
 A started process is not a working network: `start` reports level 2, `health` reports levels 3–4. Nothing
 is restarted automatically. A crash shows up as `exited` with a pointer to `gsm-lab logs`.
 
+**Run ledger.** When gsm-lab starts an instance it records on the control machine (in
+`~/.local/state/gsm-lab/ledger/<lab>.json`, or `$GSM_LAB_STATE/ledger/`, mode `0600`) which node it was
+started on, that node's connection data at that moment, its work directory and pid. `status`, `stop`,
+`logs` and `health` follow this record, not the current lab file. So:
+
+* if you change an instance's placement while it runs, `status`/`health` report it as **running on the
+  old node** (never "stopped"), `start` **refuses** to start a second copy, and `stop` (or
+  `restart`, which then starts it at the new place) reaches the old node;
+* an instance removed from the lab file while running is reported as `REMOVED … but running` and is
+  stopped by a full `gsm-lab stop` or by `gsm-lab stop <id>`;
+* if the recorded node cannot be reached, the instance is reported `unreachable`, never `stopped`, and
+  `start` refuses until the node can be checked.
+
 **tmux / tmuxinator.** `start --backend tmux` (or `lab: { backend: tmux }`) runs each instance in a pane
 of session `gsm-lab-<lab>` on its node (windows `core`, `ran`, `ms`). Tracking and stopping work as in
 the default `proc` backend. To keep using tmuxinator:
@@ -275,16 +299,19 @@ tmuxinator start gsm-lab-<lab>
 Each pane runs `gsm-lab exec <instance>`, which renders, records state and execs the program. The lab
 file stays the only source of truth, and `gsm-lab status/health/stop` work on those processes too. Your
 existing `~/.config/tmuxinator/osmocom.yml` is not touched.
+Panes for instances on remote nodes run `ssh -t <node> <this repo>/gsm-lab -f <lab file> exec …`: that
+node needs this repository and the same lab file at the same paths.
 
 ## 11. Adding a physical node
 
-1. Make it reachable by key: `ssh-copy-id lab@192.168.50.14`, then `ssh -o BatchMode=yes lab@… true`.
+1. Verify and record its host key (see [Security](#security)), then make it reachable by key:
+   `ssh-copy-id lab@198.51.100.14` (placeholder address/user), then `ssh -o BatchMode=yes lab@… true`.
 2. Install or build Osmocom there (`./gsm-lab setup --build` in a clone at the same path, or set
    `prefix:`).
 3. Add it:
    ```yaml
    nodes:
-     node-04: { host: 192.168.50.14, address: 192.168.50.14, ssh: { user: lab } }
+     node-04: { host: 198.51.100.14, address: 198.51.100.14, ssh: { user: lab } }
    ```
 4. `gsm-lab nodes --status`, then `gsm-lab doctor`.
 
@@ -293,10 +320,12 @@ existing `~/.config/tmuxinator/osmocom.yml` is not touched.
 Change only the placement: `instances.<id>.node`, or the entry in the active deployment. Then:
 
 ```
-gsm-lab stop bts-03
 gsm-lab -d core-bsc validate        # e.g. switch to another named deployment
-gsm-lab start bts-03
+gsm-lab -d core-bsc restart bts-03  # stops it where it runs now (run ledger), starts it at the new place
 ```
+
+The order doesn't matter: the run ledger remembers where each instance actually runs, so editing the file
+first can't orphan the old process (section 10).
 
 The BTS keeps its LAC/CI/BSIC/unit id/ARFCNs. Its new config points at the same BSC. Moving a *server*
 (e.g. the BSC) changes the remote address in its clients' configs; `start` regenerates them, and you
@@ -347,6 +376,10 @@ shares a node with another BSC, give it its own `vty`/`ctrl` ports and a second 
 | `NOT stopped: pid … belongs to another program` | the recorded process is gone and its pid was reused. gsm-lab leaves the other program alone. |
 | `hand-edited copy kept as …edited-…` | you edited a generated cfg on the node. Your copy was saved; move the change into the lab file (`raw:`). |
 | `./gsm build`: `source directory already configured` | in-tree configure in that component: `make distclean` there (section 8). |
+| `REFUSED: still running on node-01 …` | the instance was started on another node than the lab file now says. `gsm-lab restart <id>` moves it. |
+| `unreachable` / `REFUSED: … cannot be reached` | the node an instance was started on is down or SSH fails. Fix access, then `stop`/`start`; gsm-lab will not guess. |
+| `Host key verification failed` | the node's host key is not in `~/.ssh/known_hosts` yet ([Security](#security)). |
+| `INST-ORPHAN` | an MSC/BSC/BTS/TRX that no network references; its config can't be generated. Reference it or remove it. |
 
 ---
 
@@ -369,6 +402,44 @@ Checked in the pinned sources (Aug-2026 release set) and live where marked:
 | Several instances of a service on one node | **Supported** with distinct ports; HLR (GSUP 4222) and BSC (Abis 3002/3003) **only on distinct IPs** | `hlr_vty.c` `bind ip` only; `e1_input_vty.c` `ipa bind` only |
 | Static M3UA routing keys | **Supported** | live: single node, LU + SMS |
 
+## Security
+
+* **Lab files are trusted, executable configuration.** `prefix` chooses which binaries run, `args` and
+  `raw` pass arbitrary options and VTY commands, `config_file` runs any config, and `ssh.options` is
+  handed to ssh as is (e.g. `-o ProxyCommand=…` runs a local command). Only use lab files and overrides
+  you wrote or reviewed, like shell scripts. Values can't smuggle extra config lines or shell syntax:
+  control characters and line breaks are rejected everywhere (except newlines in `raw`), identifiers,
+  host names and SSH users are restricted, and every shell value is quoted.
+* **SSH host keys.** gsm-lab connects with `BatchMode=yes` and OpenSSH's default host-key checking, so
+  an unknown or changed host key **fails** the connection; it is never accepted silently. Before the
+  first use of a node, get its key fingerprint from the console of that machine
+  (`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`), then connect once interactively
+  (`ssh lab@<node>`) and accept only if the fingerprint matches. Alternatively
+  `ssh-keyscan -t ed25519 <node> >> ~/.ssh/known_hosts` after comparing `ssh-keygen -lf` of the scanned
+  key with the console output. Don't use `StrictHostKeyChecking=no`.
+* **SIM keys (Ki).** Lab files may contain Ki values: keep real ones in a `*.local.yaml` override
+  (ignored by git everywhere in the repository). gsm-lab sends Ki values to the HLR inside VTY commands
+  on **stdin**, so they never appear in process arguments (`ps`) on the control machine or the node, nor
+  on the ssh command line. On nodes, configs and databases holding them are `0600` in `0700` directories.
+* **VTY/CTRL have no login.** Any user who can reach an Osmocom VTY or CTRL port can reconfigure that
+  element, and through the HLR's VTY read and change subscriber keys. gsm-lab binds them to loopback by
+  default and warns (`MGMT-EXPOSED`) when one listens on another address. Reach them through SSH. Local
+  users of a node can still connect to loopback; use dedicated lab machines.
+* **Git.** `gsm-lab setup/update/repo-auth` never prompt for credentials and never print secrets. They
+  make SSH non-interactive only when you have no SSH command of your own; an existing
+  `core.sshCommand`, `GIT_SSH_COMMAND` or `GIT_SSH` is used unchanged.
+
+## Open architecture items
+
+Decided to be out of scope for now. Each needs a design decision before it is modelled; until then use
+`config_file`/`raw` or the existing scripts.
+
+| Item | Current state | Open question |
+|---|---|---|
+| `osmo-a-worker`, `osmo-abis-worker` (distributed OsmoBSC fork, `~/osmocom/osmo-bsc-distributed`) | Not modelled. They exist only in `/usr/local` (not in this repo's pinned set), take no config file (CLI flags only), and the BSC side uses a hard-coded `/tmp/aipc_default` socket. Driven today by `~/osmocom/lab-test/start.sh`. | Service types of their own, or part of a "distributed BSC" instance? How to express the BSC↔worker sockets and per-worker point codes; how to handle the fixed AIPC path for several BSCs per node. |
+| MSC pooling (one BSC → several MSCs, NRI) | Supported by osmo-bsc; gsm-lab rejects a BSC in several networks (`CAP-BSC-NETS`). `~/osmocom/msc-pool-lab` generates such configs separately. | A `networks.<id>.mscs` list with NRI ranges, rendered into `msc N` blocks; validation of NRI consistency across BSCs. |
+| Real BBUs | Only placeholder node data in this repository. | Connection details to be provided; then a site override and `gsm-lab doctor` against the real nodes. |
+
 ## Verification status
 
 | Feature | How verified |
@@ -377,7 +448,8 @@ Checked in the pinned sources (Aug-2026 release set) and live where marked:
 | Repository access check, safe update | live against GitHub; skip-on-local-work in `lab/tests/test_repo.py` |
 | Validation rules, config rendering, all example topologies | `lab/tests/test_scenarios.py` (19 tests, the 15 scenarios of the brief) |
 | Process lifecycle, ownership check, drift backup, dependency blocking | `lab/tests/test_runtime.py` with real processes |
-| Remote (SSH) execution | command construction and every remote script run through an `ssh` shim in `test_runtime.py`; **not** against a real second machine (no sshd here) |
+| Remote (SSH) execution | command construction, quoting, stdin transport and remote file modes, through an `ssh` shim that runs the remote command line locally (`test_runtime.py`, `test_hardening.py`); **not** against a real second machine (no sshd here) |
+| Run ledger: moved / removed / unreachable instances; Ki not in arguments; file modes; strict keys; injection; git SSH command; `*.local.yaml` | `lab/tests/test_hardening.py` (26 tests; 25 of them fail on the code before the hardening pass, the 26th checks that multi-line `raw` stays allowed); live: changing the deployment under a running network (`test_live.py`) |
 | Single node; 1 MSC + 2 BSCs on 3 nodes; deployments C and D; 2 PLMNs on 1 node; static routing; tmux; tmuxinator | **live** with the real binaries, virtual BTS + virtual phone (`GSM_LAB_LIVE=1 lab/tests/test_live.py`); multi-node runs use one host with one loopback address per node |
 | osmo-bts-trx + osmo-trx (SDR) | configs parse and osmo-bts-trx reaches the BSC (OML, both TRXs configured); **RF not tested** (no USRP attached) |
 | Real physical BBUs, real phones, voice calls | **not tested** |
@@ -395,22 +467,25 @@ instances:
     node: <node>              # or from the deployment
     variant: virtual|trx (bts), uhd|lms|ipc|blade (trx)
     bind: <ip | node address name>
-    vty / ctrl: <port> | "ip:port" | { ip, port }
+    vty / ctrl: <port> | "ip:port" | { ip, port }    # ctrl: not for stp, mobile, virtphy
     ports: { <name>: <port> | { ip, port } }      # names: see `gsm-lab services`
     point_code: 0.23.1          # msc, bsc (stp optional)
     m3ua_local_port: 2911       # msc, bsc with routing: static
     transport: tcp | sctp       # stp
     rtp_range: [lo, hi], rtp_bind, endpoints      # mgw
     subscribers: [{ imsi, msisdn, ki }]           # hlr (SIMs of mobiles are added automatically)
-    virtual_um: { ms_group, bts_group, ms_port, bts_port, netdev, ttl }   # bts virtual, virtphy
-    trx_options: { local_base_port, <osmo-trx 'trx' node command>: value }
+    virtual_um: { ms_group, bts_group, ms_port, bts_port, netdev, ttl }   # bts virtual (virtphy: no bts_port)
+    trx_options: { local_base_port }                   # bts variant trx
+    trx_options: { <osmo-trx 'trx' node command>: value }   # trx, e.g. clock-ref: external
     dev_args: "type=b200"       # trx
     virtphy: <id>, sims: [{ imsi, ki, msisdn, imei?, virtphy? }]          # mobile
     raw: |                      # VTY appended verbatim to the generated config
     args: [..]                  # extra command-line arguments
     config_file: /abs/path.cfg  # use a hand-written config instead (validator warns)
-    log_level: notice
+    log_level: notice           # debug | info | notice | error | fatal
     enabled: true
+  # Only the keys listed for a service are accepted; anything else is an error, never silently ignored.
+  # virtphy accepts only service, node, args, enabled, virtual_um (no config file, no VTY).
 networks:     { <id>: { plmn, stp, msc, hlr, mgw, authentication?, encryption?, routing?, short_name?, long_name?,
                         bscs: { <bsc>: { mgw?, ran_plmn?, bts: { <bts>: { band, lac, ci, bsic, unit_id,
                         number?, trx: [{ arfcn, phy?, channel?, nominal_power?, max_power_red?, timeslots? }] } } } } } }

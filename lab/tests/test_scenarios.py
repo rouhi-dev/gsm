@@ -35,11 +35,11 @@ class Scenarios(unittest.TestCase):
         self.assertEqual([i for i in validate.validate(lab) if i.level == "error"], [])
         bsc = render.render(lab, "bsc-01").config
         # the BSC (node-02) reaches STP and MGW on node-01 -- never localhost
-        self.assertRegex(bsc, r"asp asp-bsc-01 2905 0 m3ua tcp\n  remote-ip 192\.168\.50\.11\n  local-ip 192\.168\.50\.12")
-        self.assertRegex(bsc, r"mgw 0\n  remote-ip 192\.168\.50\.11\n  remote-port 2427\n  local-ip 192\.168\.50\.12")
-        self.assertIn("ipa bind 192.168.50.12", bsc)
+        self.assertRegex(bsc, r"asp asp-bsc-01 2905 0 m3ua tcp\n  remote-ip 198\.51\.100\.11\n  local-ip 198\.51\.100\.12")
+        self.assertRegex(bsc, r"mgw 0\n  remote-ip 198\.51\.100\.11\n  remote-port 2427\n  local-ip 198\.51\.100\.12")
+        self.assertIn("ipa bind 198.51.100.12", bsc)
         bts = render.render(lab, "bts-01").config
-        self.assertIn("oml remote-ip 192.168.50.12", bts)           # BTS on node-03 -> BSC on node-02
+        self.assertIn("oml remote-ip 198.51.100.12", bts)           # BTS on node-03 -> BSC on node-02
 
     # 3 ---------------------------------------------------------------------------------------------
     def test_03_one_msc_two_bscs(self):
@@ -68,7 +68,7 @@ class Scenarios(unittest.TestCase):
         self.assertEqual(lab.instances["bts-01"].node, "node-02")
         self.assertEqual(lab.instances["bts-02"].node, "node-03")
         for b in ("bts-01", "bts-02"):
-            self.assertIn("oml remote-ip 192.168.50.12", render.render(lab, b).config)
+            self.assertIn("oml remote-ip 198.51.100.12", render.render(lab, b).config)
         # ... and a BSC Abis listener on loopback cannot serve a remote BTS
         raw = base()
         add_node(raw, "n2", "10.0.0.2")
@@ -252,14 +252,14 @@ class Loading(unittest.TestCase):
     def test_override_remaps_nodes_without_touching_topology(self):
         phys = load("multi-bsc.yaml")
         sim = load("multi-bsc.yaml", overrides=["overrides/one-host.yaml"])
-        self.assertEqual(phys.instances["bsc-01"].bind, "192.168.50.12")
+        self.assertEqual(phys.instances["bsc-01"].bind, "198.51.100.12")
         self.assertEqual(sim.instances["bsc-01"].bind, "127.0.2.1")
         self.assertTrue(all(n.local for n in sim.nodes.values()))
         self.assertEqual(render.render(phys, "bsc-01").config.split("e1_input")[0].count("bind"), 2)
 
     def test_placement_named_address(self):
         lab = load("multi-bsc.yaml", "core-bsc")
-        self.assertEqual(lab.instances["bsc-02"].bind, "192.168.50.21")
+        self.assertEqual(lab.instances["bsc-02"].bind, "198.51.100.21")
 
     def test_all_examples_valid(self):
         for f, deps in (("single-node.yaml", [None]), ("multi-plmn.yaml", [None]), ("sdr-b210.yaml", [None]),

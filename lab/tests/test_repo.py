@@ -18,6 +18,11 @@ ENV = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COM
        "GIT_CONFIG_VALUE_0": "always"}
 
 
+def write(path, text):
+    with open(path, "w") as f:
+        f.write(text)
+
+
 def sh(cwd, *args):
     return subprocess.run(["git", *args], cwd=cwd, env=ENV, check=True, capture_output=True, text=True).stdout.strip()
 
@@ -26,12 +31,11 @@ class UpdateSafety(unittest.TestCase):
     def setUp(self):
         self.t = tempfile.mkdtemp(prefix="gsm-lab-repo-")
         os.environ.update({k: ENV[k] for k in ("GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0")})
-        repo.ENV.update({k: ENV[k] for k in ("GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0")})
         for name in ("liba", "libb"):
             d = os.path.join(self.t, "up", name)
             os.makedirs(d)
             sh(d, "init", "-q", "-b", "main")
-            open(os.path.join(d, "f"), "w").write("1\n")
+            write(os.path.join(d, "f"), "1\n")
             sh(d, "add", "f")
             sh(d, "commit", "-qm", "v1")
         sup = os.path.join(self.t, "up", "super")
@@ -45,7 +49,7 @@ class UpdateSafety(unittest.TestCase):
         # upstream moves both submodules to v2 and records that in the superproject
         for name in ("liba", "libb"):
             d = os.path.join(self.t, "up", name)
-            open(os.path.join(d, "f"), "w").write("2\n")
+            write(os.path.join(d, "f"), "2\n")
             sh(d, "commit", "-qam", "v2")
             sh(os.path.join(sup, name), "pull", "-q", "origin", "main")
         sh(sup, "commit", "-qam", "super v2")
@@ -55,8 +59,8 @@ class UpdateSafety(unittest.TestCase):
 
     def test_update_moves_clean_and_keeps_local_work(self):
         a, b = os.path.join(self.work, "liba"), os.path.join(self.work, "libb")
-        open(os.path.join(a, "f"), "w").write("my uncommitted work\n")          # liba: dirty
-        open(os.path.join(b, "g"), "w").write("x\n")                             # libb: local commit
+        write(os.path.join(a, "f"), "my uncommitted work\n")          # liba: dirty
+        write(os.path.join(b, "g"), "x\n")                             # libb: local commit
         sh(b, "add", "g")
         sh(b, "commit", "-qm", "local experiment")
         mine = sh(b, "rev-parse", "HEAD")

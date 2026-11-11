@@ -15,6 +15,7 @@ The VTY regexes are the ones proven in tests/smoke-core.sh against the pinned re
 """
 
 import re
+import shlex
 import time
 from dataclasses import dataclass
 
@@ -77,14 +78,27 @@ def service_checks(rt, iid):
 def check(rt, targets=None, levels=("process", "vty", "service")):
     lab = rt.lab
     res = []
-    for iid in targets or list(lab.instances):
+    for iid in (targets or []) if targets else rt.removed():
+        if iid in lab.instances:
+            continue
+        state, pid, loc = rt.where(iid)
+        if state in ("running", "unreachable", "unknown"):
+            res.append(Check(iid, "process", False,
+                             f"REMOVED from the lab file but {state} on {loc['node']} (pid {pid}): `gsm-lab stop {iid}`"))
+    for iid in [t for t in targets or list(lab.instances) if t in lab.instances]:
         i = lab.instances[iid]
         if not i.enabled:
             continue
-        state, pid = rt.status(iid)
+        state, pid, loc = rt.where(iid)
+        if state == "running" and rt.misplaced(iid, loc):
+            res.append(Check(iid, "process", False,
+                             f"running on {loc['node']} (pid {pid}), where it was started, but the lab file now "
+                             f"places it on {i.node}: `gsm-lab restart {iid}` moves it"))
+            continue
         res.append(Check(iid, "process", state == "running",
                          {"running": f"pid {pid}", "stopped": "not started", "dead": f"exited (pid {pid}); see `gsm-lab logs {iid}`",
-                          "foreign": f"pid {pid} reused by another program"}.get(state, state)))
+                          "foreign": f"pid {pid} reused by another program",
+                          "unreachable": f"node {loc['node'] if loc else i.node} cannot be reached"}.get(state, state)))
         if state != "running":
             continue
         if "vty" in levels and i.vty:
@@ -134,7 +148,7 @@ def e2e(rt, timeout=60, out=print):
             got = False
             end = time.time() + 30
             while time.time() < end and not got:
-                rc, _, _ = ex.run(f"grep -q {text} {smsfile} 2>/dev/null")
+                rc, _, _ = ex.run(f"grep -qF -- {shlex.quote(text)} {shlex.quote(smsfile)} 2>/dev/null")
                 got = rc == 0
                 if not got:
                     time.sleep(1)

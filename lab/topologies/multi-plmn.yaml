@@ -19,10 +19,13 @@ x-plmn-b: &plmn_b                    # common settings of PLMN B's instances (YA
   node: node-01
   bind: addr2
   vty: { ip: 127.0.0.2 }
-  ctrl: { ip: 127.0.0.2 }
+x-ctrl-b: &ctrl_b { ip: 127.0.0.2 }  # CTRL, for the services that have one (not osmo-stp, not mobile)
 
+# PLACEHOLDER NODES: every 198.51.100.x address and the ssh user 'lab' below are RFC 5737 documentation
+# values, NOT real lab machines. Put the real node data in a site override (-o site.local.yaml or
+# <this file>.local.yaml); `gsm-lab validate` warns (NODE-PLACEHOLDER) while placeholders remain.
 nodes:
-  node-01: { host: 192.168.50.11, address: 192.168.50.11, addresses: { addr2: 192.168.50.21 }, ssh: { user: lab } }
+  node-01: { host: 198.51.100.11, address: 198.51.100.11, addresses: { addr2: 198.51.100.21 }, ssh: { user: lab } }
 
 plmns:
   operator_a: { name: Operator A, mcc: "001", mnc: "01" }                  # 2-digit MNC
@@ -45,12 +48,12 @@ instances:
 
   # ---- PLMN B: second address; same point codes are fine (separate STP = separate SS7 domain)
   b-stp: { service: stp, <<: *plmn_b }
-  b-hlr: { service: hlr, <<: *plmn_b }
-  b-mgw: { service: mgw, <<: *plmn_b }
-  b-msc: { service: msc, point_code: 0.23.1, <<: *plmn_b }
-  b-bsc: { service: bsc, point_code: 0.23.3, <<: *plmn_b }
+  b-hlr: { service: hlr, ctrl: *ctrl_b, <<: *plmn_b }
+  b-mgw: { service: mgw, ctrl: *ctrl_b, <<: *plmn_b }
+  b-msc: { service: msc, point_code: 0.23.1, ctrl: *ctrl_b, <<: *plmn_b }
+  b-bsc: { service: bsc, point_code: 0.23.3, ctrl: *ctrl_b, <<: *plmn_b }
   # separate virtual-Um multicast groups: PLMN B's cell and phone don't hear PLMN A's
-  b-bts: { service: bts, variant: virtual, virtual_um: { ms_group: 239.193.24.1, bts_group: 239.193.24.2 }, <<: *plmn_b }
+  b-bts: { service: bts, variant: virtual, virtual_um: { ms_group: 239.193.24.1, bts_group: 239.193.24.2 }, ctrl: *ctrl_b, <<: *plmn_b }
   b-phy: { service: virtphy, virtual_um: { ms_group: 239.193.24.1, bts_group: 239.193.24.2 }, node: node-01 }
   b-ms:
     service: mobile

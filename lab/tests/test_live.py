@@ -52,6 +52,30 @@ class Live(unittest.TestCase):
     def test_bscs_colocated_bts_distributed(self):
         self.lab("multi-bsc.yaml", "-o", ONE_HOST, "-d", "core-bsc")
 
+    def test_redeploy_while_running(self):
+        """Change the deployment under a running network: nothing may be orphaned or started twice."""
+        d = ["-f", os.path.join(TOPO, "multi-bsc.yaml"), "-o", ONE_HOST, "-d", "bsc-per-node"]
+        c = ["-f", os.path.join(TOPO, "multi-bsc.yaml"), "-o", ONE_HOST, "-d", "core-bsc"]
+        try:
+            rc, out = run(*d, "start")
+            self.assertEqual(rc, 0, out)
+            rc, out = run(*c, "status", "bsc-02")            # placed on node-01 now, runs on node-03
+            self.assertNotEqual(rc, 0)
+            self.assertIn("running on node-03", out)
+            rc, out = run(*c, "start", "bsc-02", "--no-deps")
+            self.assertNotEqual(rc, 0)
+            self.assertIn("REFUSED", out)
+            rc, out = run(*c, "restart", "bsc-01", "bsc-02", "bts-01", "bts-02", "bts-03", "bts-04", "phy-ms1", "ms-01")
+            self.assertEqual(rc, 0, out)
+            time.sleep(12)
+            rc, out = run(*c, "health", "--e2e", "--timeout", "90")
+            self.assertEqual(rc, 0, out)
+        finally:
+            run(*c, "stop")
+            run(*d, "stop")
+        rc, out = run(*c, "status")
+        self.assertNotIn("pid", out.replace("not started", ""))
+
     def test_two_plmns_one_node(self):
         out = self.lab("multi-plmn.yaml", "-o", ONE_HOST)
         self.assertEqual(out.count("delivered (MO via MSC, MT back to the phone)"), 2)
