@@ -1,0 +1,6 @@
+# Default lab file for `gsm-lab` (used when no -f is given; $GSM_LAB_FILE overrides).
+# It starts as the one-machine network of topologies/single-node.yaml. Point it at your own lab by
+# replacing the include, or copy a topology here and edit it. Site-specific node data (addresses,
+# SSH users) belongs in lab.local.yaml next to this file: it is merged on top and not committed.
+include:
+  - topologies/single-node.yaml

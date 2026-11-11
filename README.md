@@ -30,6 +30,8 @@ gsm/
 │   ├── osmo-bts            base transceiver station (osmo-bts-trx, osmo-bts-virtual, ...)
 │   ├── osmo-trx            SDR transceiver for osmo-bts-trx (UHD, LimeSuite, bladeRF, IPC)
 │   └── osmocom-bb          phone side: virtphy, mobile, trxcon, ccch_scan, osmocon, … (host programs only)
+├── gsm-lab                 lab manager: runs GSM networks described in YAML across one or more nodes
+├── lab/                    gsm-lab code (gsmlab/), example topologies, tests, docs/LAB.md
 ├── tools/create-forks.sh   create the GitHub forks and prove each contains its pinned commit (safe, idempotent)
 ├── tests/smoke-core.sh     start the core network, check it interconnects; --with-ms adds a virtual phone
 ├── .github/workflows/      CI: init → build → verify → smoke test on Ubuntu
@@ -137,6 +139,22 @@ same either way.
 | `./gsm bump <component> <tag\|commit> [--push]` | move one pin; refuses if the commit is missing from your fork; stages the change for you to review and commit |
 
 Every command prints `[ OK ]` / `[WARN]` / `[FAIL]` lines and exits non-zero on failure.
+
+## Running a lab: gsm-lab
+
+`./gsm-lab` runs what `./gsm` builds. One YAML file describes the physical nodes, the PLMNs, the logical
+network (MSC → BSCs → BTSs → TRXs, STP signalling) and which instance runs on which node. gsm-lab
+validates it, generates every Osmocom config, starts the instances in dependency order (locally, over SSH,
+or in tmux panes), and checks health from "process runs" up to "a phone registers and gets an SMS back".
+
+```bash
+./gsm-lab setup --build                                   # phase 0: submodules + access check + build
+./gsm-lab -f lab/topologies/multi-bsc.yaml -o lab/topologies/overrides/one-host.yaml start
+./gsm-lab -f lab/topologies/multi-bsc.yaml -o lab/topologies/overrides/one-host.yaml health --e2e
+```
+
+Full guide, including what Osmocom does and doesn't support for multi-PLMN setups:
+[lab/docs/LAB.md](lab/docs/LAB.md).
 
 ## Updating safely
 

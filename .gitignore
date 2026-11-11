@@ -1,3 +1,6 @@
 /_build/
 /_install/
 /config/build.local.conf
+/lab/*.local.yaml
+/lab/topologies/*.local.yaml
+__pycache__/
