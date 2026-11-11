@@ -1,0 +1,85 @@
+# Two PLMNs, two fully independent GSM networks, ONE physical node (scenarios 2, 3, 8, 9).
+#
+# What Osmocom supports here (checked in the pinned sources, see lab/docs/LAB.md):
+#   * one OsmoMSC = one PLMN ('network country code' / 'mobile network code' exist once per process),
+#     so each PLMN gets its own MSC instance;
+#   * one OsmoBSC broadcasts one PLMN (no per-BTS MCC/MNC), so each PLMN gets its own BSC;
+#   * separate STP, HLR and MGW per PLMN keep the networks independent (point codes may even repeat:
+#     different STPs are different SS7 domains). Sharing them is possible but flagged by the validator.
+#
+# Co-location on one node: OsmoHLR GSUP (4222) and OsmoBSC Abis (3002/3003) ports are fixed, so PLMN B's
+# instances bind to a second address ('addr2'); their VTY/CTRL listen on 127.0.0.2 with default ports.
+#
+#   gsm-lab -f lab/topologies/multi-plmn.yaml validate
+#   gsm-lab -f lab/topologies/multi-plmn.yaml -o lab/topologies/overrides/one-host.yaml start
+lab:
+  name: multi-plmn
+
+x-plmn-b: &plmn_b                    # common settings of PLMN B's instances (YAML anchor)
+  node: node-01
+  bind: addr2
+  vty: { ip: 127.0.0.2 }
+  ctrl: { ip: 127.0.0.2 }
+
+nodes:
+  node-01: { host: 192.168.50.11, address: 192.168.50.11, addresses: { addr2: 192.168.50.21 }, ssh: { user: lab } }
+
+plmns:
+  operator_a: { name: Operator A, mcc: "001", mnc: "01" }                  # 2-digit MNC
+  operator_b: { name: Operator B, mcc: "001", mnc: "002", mnc_length: 3 }  # 3-digit MNC: "002" != "02"
+
+instances:
+  # ---- PLMN A: node address, default ports
+  a-stp: { service: stp, node: node-01 }
+  a-hlr: { service: hlr, node: node-01 }
+  a-mgw: { service: mgw, node: node-01 }
+  a-msc: { service: msc, node: node-01, point_code: 0.23.1 }
+  a-bsc: { service: bsc, node: node-01, point_code: 0.23.3 }
+  a-bts: { service: bts, variant: virtual, node: node-01 }
+  a-phy: { service: virtphy, node: node-01 }
+  a-ms:
+    service: mobile
+    node: node-01
+    virtphy: a-phy
+    sims: [{ imsi: "001010000000301", msisdn: "5301", ki: "0f0e0d0c0b0a09080706050403020100" }]
+
+  # ---- PLMN B: second address; same point codes are fine (separate STP = separate SS7 domain)
+  b-stp: { service: stp, <<: *plmn_b }
+  b-hlr: { service: hlr, <<: *plmn_b }
+  b-mgw: { service: mgw, <<: *plmn_b }
+  b-msc: { service: msc, point_code: 0.23.1, <<: *plmn_b }
+  b-bsc: { service: bsc, point_code: 0.23.3, <<: *plmn_b }
+  # separate virtual-Um multicast groups: PLMN B's cell and phone don't hear PLMN A's
+  b-bts: { service: bts, variant: virtual, virtual_um: { ms_group: 239.193.24.1, bts_group: 239.193.24.2 }, <<: *plmn_b }
+  b-phy: { service: virtphy, virtual_um: { ms_group: 239.193.24.1, bts_group: 239.193.24.2 }, node: node-01 }
+  b-ms:
+    service: mobile
+    virtphy: b-phy
+    sims: [{ imsi: "001002000000401", msisdn: "6401", ki: "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf" }]
+    <<: *plmn_b
+
+networks:
+  net-a:
+    plmn: operator_a
+    short_name: OpA
+    stp: a-stp
+    msc: a-msc
+    hlr: a-hlr
+    mgw: a-mgw
+    authentication: required
+    bscs:
+      a-bsc:
+        bts:
+          a-bts: { lac: 100, ci: 1, bsic: 1, unit_id: 3001, trx: [{ arfcn: 871 }] }
+  net-b:
+    plmn: operator_b
+    short_name: OpB
+    stp: b-stp
+    msc: b-msc
+    hlr: b-hlr
+    mgw: b-mgw
+    authentication: required
+    bscs:
+      b-bsc:
+        bts:
+          b-bts: { lac: 200, ci: 1, bsic: 2, unit_id: 4001, trx: [{ arfcn: 881 }] }
