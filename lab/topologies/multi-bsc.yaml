@@ -1,0 +1,80 @@
+# One PLMN, one MSC with TWO BSCs, four BTSs (one with two TRXs), spread over three BBU nodes.
+#
+# The logical network (networks:) never changes. Where things run is chosen by a deployment:
+#
+#   gsm-lab -f lab/topologies/multi-bsc.yaml -d split   topology    # B: core | BSCs | BTSs
+#   gsm-lab -f lab/topologies/multi-bsc.yaml -d core-bsc topology   # C: core+BSCs | BTSs over 2 nodes
+#   gsm-lab -f lab/topologies/multi-bsc.yaml -d bsc-per-node ...    # D: core | BSC+BTS | BSC+BTS+BTS
+#
+# Without access to the BBUs, run any of them on this one machine (each "node" gets its own loopback
+# address; nothing in this file changes):
+#
+#   gsm-lab -f lab/topologies/multi-bsc.yaml -o lab/topologies/overrides/one-host.yaml -d bsc-per-node start
+lab:
+  name: multi-bsc
+  deployment: bsc-per-node          # default placement; -d overrides
+
+nodes:                              # physical BBUs -- connection data only, no roles
+  # 'addr2' is a second address on the node, used when two BSCs (or two HLRs) share it: their Abis/IP
+  # (3002/3003) and GSUP (4222) ports cannot be changed, so co-located ones need different IPs.
+  node-01: { host: 192.168.50.11, address: 192.168.50.11, addresses: { addr2: 192.168.50.21 }, ssh: { user: lab } }
+  node-02: { host: 192.168.50.12, address: 192.168.50.12, addresses: { addr2: 192.168.50.22 }, ssh: { user: lab } }
+  node-03: { host: 192.168.50.13, address: 192.168.50.13, addresses: { addr2: 192.168.50.23 }, ssh: { user: lab } }
+
+plmns:
+  operator_a: { name: Operator A, mcc: "001", mnc: "01" }
+
+instances:                          # what runs; 'node' comes from the selected deployment
+  stp-01: { service: stp }
+  hlr-01: { service: hlr }
+  mgw-01: { service: mgw }
+  msc-01: { service: msc, point_code: 0.23.1 }
+  # Each BSC/BTS gets its own VTY/CTRL ports once, so any deployment may co-locate them.
+  bsc-01: { service: bsc, point_code: 0.23.3 }
+  bsc-02: { service: bsc, point_code: 0.23.4, vty: 4342, ctrl: 4349 }
+  bts-01: { service: bts, variant: virtual }
+  bts-02: { service: bts, variant: virtual, vty: 4281, ctrl: 4282 }
+  bts-03: { service: bts, variant: virtual, vty: 4283, ctrl: 4284 }
+  bts-04: { service: bts, variant: virtual, vty: 4285, ctrl: 4286 }
+  phy-ms1: { service: virtphy }
+  ms-01:
+    service: mobile
+    virtphy: phy-ms1
+    sims: [{ imsi: "001010000000201", msisdn: "5201", ki: "00112233445566778899aabbccddeeff" }]
+
+networks:
+  net-a:
+    plmn: operator_a
+    stp: stp-01
+    msc: msc-01
+    hlr: hlr-01
+    mgw: mgw-01
+    authentication: required
+    bscs:
+      bsc-01:                        # LAC 10
+        bts:
+          bts-01:
+            lac: 10
+            ci: 101
+            bsic: 10
+            unit_id: 1001
+            trx: [{ arfcn: 871 }, { arfcn: 875, timeslots: [TCH/F, TCH/F, TCH/F, TCH/F, TCH/F, TCH/F, TCH/F, TCH/F] }]
+          bts-02: { lac: 10, ci: 102, bsic: 11, unit_id: 1002, trx: [{ arfcn: 879 }] }
+      bsc-02:                        # LAC 20
+        bts:
+          bts-03: { lac: 20, ci: 201, bsic: 20, unit_id: 2001, trx: [{ arfcn: 883 }] }
+          bts-04: { lac: 20, ci: 202, bsic: 21, unit_id: 2002, trx: [{ arfcn: 885 }] }
+
+deployments:
+  all-in-one:                        # A
+    { stp-01: node-01, hlr-01: node-01, mgw-01: node-01, msc-01: node-01, bsc-01: node-01, bsc-02: { node: node-01, bind: addr2 },
+      bts-01: node-01, bts-02: node-01, bts-03: node-01, bts-04: node-01, phy-ms1: node-01, ms-01: node-01 }
+  split:                             # B
+    { stp-01: node-01, hlr-01: node-01, mgw-01: node-01, msc-01: node-01, bsc-01: node-02, bsc-02: { node: node-02, bind: addr2 },
+      bts-01: node-03, bts-02: node-03, bts-03: node-03, bts-04: node-03, phy-ms1: node-03, ms-01: node-03 }
+  core-bsc:                          # C
+    { stp-01: node-01, hlr-01: node-01, mgw-01: node-01, msc-01: node-01, bsc-01: node-01, bsc-02: { node: node-01, bind: addr2 },
+      bts-01: node-02, bts-02: node-02, bts-03: node-03, bts-04: node-03, phy-ms1: node-02, ms-01: node-02 }
+  bsc-per-node:                      # D
+    { stp-01: node-01, hlr-01: node-01, mgw-01: node-01, msc-01: node-01, bsc-01: node-02, bts-01: node-02,
+      bsc-02: node-03, bts-02: node-03, bts-03: node-03, bts-04: node-03, phy-ms1: node-03, ms-01: node-03 }

@@ -1,0 +1,57 @@
+# Real radio: core + BSC on node-01, one BTS with TWO TRXs on node-02 (a BBU with a USRP B210).
+# osmo-bts-trx drives one osmo-trx process; each TRX of the cell is one osmo-trx channel.
+#
+# Hardware-dependent: gsm-lab verifies the generated configs and the endpoints; RF operation needs the
+# SDR attached, a licence to transmit (or a shielded setup), and test SIMs/phones.
+#
+#   gsm-lab -f lab/topologies/sdr-b210.yaml validate
+#   gsm-lab -f lab/topologies/sdr-b210.yaml render trx-01 bts-01
+lab:
+  name: sdr-b210
+
+nodes:
+  node-01: { host: 192.168.50.11, address: 192.168.50.11, ssh: { user: lab } }
+  node-02: { host: 192.168.50.12, address: 192.168.50.12, ssh: { user: lab } }
+
+plmns:
+  test: { name: Test, mcc: "001", mnc: "01" }
+
+instances:
+  stp-01: { service: stp, node: node-01 }
+  hlr-01: { service: hlr, node: node-01 }
+  mgw-01: { service: mgw, node: node-01 }
+  msc-01: { service: msc, node: node-01, point_code: 0.23.1 }
+  bsc-01: { service: bsc, node: node-01, point_code: 0.23.3 }
+  bts-01:
+    service: bts
+    variant: trx                     # osmo-bts-trx
+    node: node-02
+    bind: 127.0.0.1                  # TRXC/TRXD to osmo-trx on the same BBU stays on loopback ...
+    trx_options: { local_base_port: 5800 }
+  trx-01:
+    service: trx
+    variant: uhd                     # osmo-trx-uhd
+    node: node-02
+    ports: { trxd: { ip: 127.0.0.1, port: 5700 } }   # ... (clock 5700, then per channel TRXC/TRXD)
+    dev_args: "type=b200"
+    trx_options: { clock-ref: internal, tx-sps: 4, rx-sps: 4, egprs: disable }
+
+networks:
+  net-a:
+    plmn: test
+    stp: stp-01
+    msc: msc-01
+    hlr: hlr-01
+    mgw: mgw-01
+    bscs:
+      bsc-01:
+        bts:
+          bts-01:
+            band: DCS1800
+            lac: 1
+            ci: 1
+            bsic: 63
+            unit_id: 6969
+            trx:
+              - { arfcn: 871, phy: trx-01, channel: 0 }
+              - { arfcn: 875, phy: trx-01, channel: 1 }
