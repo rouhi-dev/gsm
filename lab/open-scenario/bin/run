@@ -1,0 +1,31 @@
+#!/bin/bash
+# open-scenario process launcher (used by the generated tmuxinator windows):
+#   run [--copy CFG] RUN_DIR [NAME=VALUE...] -- PROGRAM ARGS...
+# Creates RUN_DIR (0700) and works in it, records "PID PROGRAM" in RUN_DIR/pid for `scenario.py stop`, then execs
+# PROGRAM with that same PID (no extra child process: the window's output is appended to RUN_DIR/out.log by tmux
+# pipe-pane when run inside tmux). --copy places a copy of CFG in RUN_DIR first (for programs that write next to
+# their config file). A HOME among the NAME=VALUE pairs gets the .osmocom/bb directory osmocom-bb's mobile needs.
+set -e
+copy=
+if [ "$1" = "--copy" ]; then copy=$2; shift 2; fi
+run=$1; shift
+env=()
+while [ $# -gt 0 ] && [ "$1" != "--" ]; do env+=("$1"); shift; done
+[ "$1" = "--" ] && shift
+[ $# -gt 0 ] || { echo "usage: run [--copy CFG] RUN_DIR [NAME=VALUE...] -- PROGRAM ARGS..." >&2; exit 2; }
+umask 077
+mkdir -p "$run"; chmod 700 "$run"
+for kv in "${env[@]}"; do
+	case "$kv" in HOME=*) mkdir -p "${kv#HOME=}/.osmocom/bb" ;; esac
+done
+cd "$run"
+if [ -f pid ] && read -r opid oprog < pid && [ -e "/proc/$opid" ] \
+   && [ "$(readlink -f "/proc/$opid/exe" 2>/dev/null)" = "$(readlink -f "$oprog")" ]; then
+	echo "already running: $oprog (pid $opid) in $run -- stop it first (scenario.py stop <node>)" >&2
+	exit 1
+fi
+[ -n "$copy" ] && cp "$copy" "$run/"
+echo "$$ $(readlink -f "$1")" > pid
+echo "=== $(date '+%F %T') start: $*" >> out.log
+[ -n "$TMUX" ] && tmux pipe-pane -o "cat >> '$run/out.log'"
+exec env "${env[@]}" "$@"

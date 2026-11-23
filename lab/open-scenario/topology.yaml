@@ -1,0 +1,126 @@
+# open-scenario: the A-worker laboratory topology -- the ONE source of truth of this directory.
+#
+#   ./scenario.py generate     # renders generated/ (every element config + one tmuxinator project per node)
+#   ./scenario.py check        # validates this file, the binaries, the generated files and the tmuxinator files
+#   ./scenario.py status       # what the running elements report (VTY / Supervisor STATUS)
+#
+# Switch the BSC between the two architectures by changing ONE value, elements.bsc-01.mode, then `generate`:
+#   legacy      osmo-bsc runs its A-worker pool itself (it forks its workers); no bsc-aworker process
+#   supervisor  bsc-aworker runs the pool as a process of its own; osmo-bsc attaches to it as its session client
+#
+# Three nodes. On one machine each node is one loopback address (127.0.41.x), so the processes of different nodes never
+# share a socket; for real machines set host/address/run_dir per node (and copy this directory to the same path there).
+#
+# Topology: one PLMN, an MSC pool of two MSCs (NRI) behind one STP, one BSC with one A link -- one worker, one cs7
+# instance, one BSC point code -- per MSC, one virtual BTS, one virtual phone:
+#
+#   [ran]  mobile ~ virtphy ~(virtual Um, GSMTAP multicast)~ osmo-bts-virtual
+#                                                               | Abis/IP (OML 3002, RSL 3003)
+#   [bsc]  osmo-bsc (+ bsc-aworker in supervisor mode) -- worker 0: cs7 0, PC 0.23.3 ---+   MGCP -> mgw-bsc
+#                                                      -- worker 1: cs7 1, PC 0.23.4 ---+
+#                                                                    M3UA over SCTP     |
+#   [core] osmo-stp (2905) <-----------------------------------------------------------+
+#            +-- msc-a (PC 0.23.1, NRI 1) --+-- GSUP --> osmo-hlr      MGCP -> mgw-core
+#            +-- msc-b (PC 0.23.2, NRI 2) --+
+
+scenario:
+  name: open-scenario
+  plmn: { mcc: "001", mnc: "01", short_name: OPEN, long_name: Open Scenario }   # strings: leading zeros matter
+  nri_bitlen: 10
+  # virtual Um (osmo-bts-virtual <-> virtphy): own multicast groups, so that no other lab's phones hear these cells
+  virtual_um: { ms_group: 239.193.41.1, bts_group: 239.193.41.2 }
+  log_level: notice                  # every element's stderr log; per-element 'log_levels' add categories
+
+# Where the programs are. 'osmocom': the pinned Osmocom set of this repository (./gsm build). 'aworker': a build of the
+# osmo-bsc a-worker-pool branch (the BSC and bsc-aworker come from there in both modes: the integrated pool of legacy
+# mode is a feature of that branch too). Default: the clean lab build of commit d0a5874e2.
+binaries:
+  osmocom: ~/dev/gsm/_install/bin
+  aworker: ~/dev/osmo-bsc-a-worker-lab/build
+
+nodes:
+  core:
+    host: localhost                  # the machine the node's tmuxinator project runs on
+    address: 127.0.41.1              # services bind here, other nodes connect here; VTY/CTRL bind here too
+    run_dir: ~/.local/state/gsm-lab/open-scenario/core     # per-process directories (pid, out.log, databases)
+  bsc:
+    host: localhost
+    address: 127.0.41.3
+    run_dir: ~/.local/state/gsm-lab/open-scenario/bsc
+  ran:
+    host: localhost
+    address: 127.0.41.4
+    run_dir: ~/.local/state/gsm-lab/open-scenario/ran
+
+# How each element type runs. A type may have several execution modes; an element picks one with 'mode' (default:
+# the type's first mode). Each mode lists its processes in start order: the program ('osmocom:' / 'aworker:' + path
+# below that binaries entry), its arguments ({cfg} = the element's generated config; with copy_cfg: a copy of it
+# in the process's run directory), environment, and stop signal (default SIGTERM).
+profiles:
+  stp:  { default: [ { process: osmo-stp, program: "osmocom:osmo-stp", args: [-c, "{cfg}"] } ] }
+  hlr:  { default: [ { process: osmo-hlr, program: "osmocom:osmo-hlr", args: [-c, "{cfg}", -l, "{run}/hlr.db"] } ] }
+  mgw:  { default: [ { process: osmo-mgw, program: "osmocom:osmo-mgw", args: [-c, "{cfg}"] } ] }
+  msc:  { default: [ { process: osmo-msc, program: "osmocom:osmo-msc", args: [-c, "{cfg}"] } ] }
+  bsc:
+    legacy:
+      - { process: osmo-bsc, program: "aworker:src/osmo-bsc/osmo-bsc", args: [-c, "{cfg}"] }
+    supervisor:
+      - { process: bsc-aworker, program: "aworker:src/a-worker/bsc-aworker", args: [-c, "{cfg}"] }
+      - { process: osmo-bsc, program: "aworker:src/osmo-bsc/osmo-bsc", args: [-c, "{cfg}"] }
+  bts-virtual: { default: [ { process: osmo-bts-virtual, program: "osmocom:osmo-bts-virtual", args: [-c, "{cfg}"] } ] }
+  virtphy:     { default: [ { process: virtphy, program: "osmocom:virtphy",
+                              args: [-s, "{run}/l2", -z, "{ms_group}", -y, "{bts_group}"] } ] }
+  # mobile: SIGINT = clean IMSI detach; needs $HOME/.osmocom/bb; writes <config dir>/<ms>.ba, so it runs on a copy
+  # of its config in its own run directory (copy_cfg)
+  mobile:      { default: [ { process: mobile, program: "osmocom:mobile", args: [-c, "{cfg}"], stop: SIGINT,
+                              env: { HOME: "{run}/home" }, copy_cfg: true } ] }
+
+elements:
+  stp-01:   { type: stp, node: core, vty: 4239, m3ua_port: 2905, transport: sctp }
+  hlr-01:
+    type: hlr
+    node: core
+    vty: 4258
+    ctrl: 4259                       # GSUP is always 4222 (osmo-hlr has only 'bind ip')
+    subscribers:                     # provisioned over the VTY once osmo-hlr runs (window 'provision')
+      - { imsi: "001010000000501", msisdn: "5501", ki: "000102030405060708090a0b0c0d0e0f" }
+  mgw-core: { type: mgw, node: core, vty: 4243, ctrl: 4267, mgcp_port: 2427, rtp: [30000, 30999] }
+  msc-a:    { type: msc, node: core, point_code: 0.23.1, nri: 1, stp: stp-01, hlr: hlr-01, mgw: mgw-core,
+              vty: 4254, ctrl: 4255, mgcp_client_port: 2728, sgs_port: 29118 }
+  msc-b:    { type: msc, node: core, point_code: 0.23.2, nri: 2, stp: stp-01, hlr: hlr-01, mgw: mgw-core,
+              vty: 4264, ctrl: 4265, mgcp_client_port: 2729, sgs_port: 29119 }
+  mgw-bsc:  { type: mgw, node: bsc, vty: 4243, ctrl: 4267, mgcp_port: 2427, rtp: [31000, 31999] }
+  bsc-01:
+    type: bsc
+    node: bsc
+    mode: supervisor                 # <-- the execution profile: legacy | supervisor
+    vty: 4242
+    ctrl: 4249                       # Abis OML/RSL are always 3002/3003 (osmo-bsc has only 'ipa bind')
+    stp: stp-01
+    mgw: mgw-bsc
+    mgcp_client_port: 2727
+    # One A link per MSC: a worker of its own, a cs7 instance of its own (instance = list position) and a BSC point
+    # code of its own. Two links to the SAME MSC are not supported by this osmo-bsc (plan item 2c).
+    a_links:
+      - { msc: msc-a, point_code: 0.23.3 }
+      - { msc: msc-b, point_code: 0.23.4 }
+    aworker_pool:                    # 'a-worker-pool' keys of the a-worker-pool branch; omitted keys keep their defaults
+      startup_timeout: 20
+      on_worker_failure: restart     # supervisor mode requires 'restart'
+      restart_delay: 5
+      echo_interval: 2               # worker ECHO (2a-6)
+      echo_misses: 3
+      session_echo_interval: 2       # BSC <-> Supervisor session ECHO (D-S12)
+      session_echo_misses: 3
+      detach_release_timeout_ms: 2000   # D-S9
+    log_levels: { aworker: info, msc: info, lss7: info, lm3ua: info }
+    bts:                             # cell identity lives in the BSC config (as in gsm-lab); key = the bts element
+      bts-01: { band: DCS1800, lac: 1, ci: 1, bsic: 63, unit_id: 6969, arfcn: 871 }
+  bts-01:   { type: bts-virtual, node: ran, bsc: bsc-01, vty: 4241, ctrl: 4238 }
+  phy-01:   { type: virtphy, node: ran }
+  ms-01:
+    type: mobile
+    node: ran
+    vty: 4247
+    virtphy: phy-01
+    sim: { imsi: "001010000000501", ki: "000102030405060708090a0b0c0d0e0f" }   # must be an hlr-01 subscriber
