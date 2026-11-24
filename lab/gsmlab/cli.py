@@ -350,6 +350,11 @@ def c_repo_auth(args):
     return 1 if repo.auth_report() else 0
 
 
+def c_cleanup(args):
+    from . import cleanup
+    return cleanup.run(args)
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="gsm-lab", description="Declarative manager for the Osmocom GSM lab.")
     p.add_argument("-f", "--file", default=DEFAULT_FILE, help=f"lab description (default: $GSM_LAB_FILE or {DEFAULT_FILE})")
@@ -370,6 +375,26 @@ def main(argv=None):
     cmd("update", c_update, "fast-forward the superproject; move only clean, unmodified submodules")
     cmd("repo-status", c_repo_status, "superproject + per-component checkout state")
     cmd("repo-auth", c_repo_auth, "check non-interactive access to every repository URL")
+    sp = cmd("cleanup", c_cleanup, "find (and with --apply remove) what the GSM/Osmocom projects installed, built "
+             "and left on this machine; dry run by default")
+    sp.add_argument("--apply", action="store_true", help="remove the items listed under WILL REMOVE (asks first)")
+    sp.add_argument("--yes", action="store_true", help="with --apply: do not ask")
+    sp.add_argument("--repo", action="store_true",
+                    help="also remove verified GSM/Osmocom repositories, worktrees and exported source trees")
+    sp.add_argument("--discard-local-work", action="store_true",
+                    help="with --repo: also remove repositories with uncommitted changes, stashes or unpushed commits")
+    sp.add_argument("--keep-repo-builds", action="store_true",
+                    help="keep the gsm workspaces' own _build/ and _install/")
+    sp.add_argument("--root", action="append", metavar="DIR",
+                    help="search for repositories and build trees here (repeatable; default: home, /opt, "
+                         "/usr/local/src, /usr/src, /srv)")
+    sp.add_argument("--prefix", action="append", metavar="DIR",
+                    help="also check this installation prefix (repeatable; /usr/local, ~/.local, /opt/* and the "
+                         "prefixes recorded by the build trees are always checked)")
+    sp.add_argument("--no-default-prefixes", action="store_true", help="check only --prefix and recorded prefixes")
+    sp.add_argument("--home", metavar="DIR", help="the user whose state to clean (default: yours; under sudo: "
+                    "the invoking user's)")
+    sp.add_argument("--json", metavar="FILE", help="also write the plan (and evidence) as JSON")
 
     sp = cmd("validate", c_validate, "check the lab description (no network access)")
     sp.add_argument("--strict", action="store_true", help="warnings fail too")
@@ -413,7 +438,7 @@ def main(argv=None):
     args = p.parse_args(argv)
     sys.stdout.reconfigure(line_buffering=True)   # keep order with output of child processes (./gsm)
     nodes.VERBOSE = args.verbose and args.cmd not in ("validate",)
-    if args.cmd in ("setup", "update", "repo-status", "repo-auth"):
+    if args.cmd in ("setup", "update", "repo-status", "repo-auth", "cleanup"):
         return args.fn(args)
     if not os.path.exists(args.file):
         sys.exit(f"[FAIL] lab file {args.file} not found (use -f FILE or set GSM_LAB_FILE; examples in lab/topologies/)")

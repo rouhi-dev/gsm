@@ -151,6 +151,7 @@ or in tmux panes), and checks health from "process runs" up to "a phone register
 ./gsm-lab setup --build                                   # phase 0: submodules + access check + build
 ./gsm-lab -f lab/topologies/multi-bsc.yaml -o lab/topologies/overrides/one-host.yaml start
 ./gsm-lab -f lab/topologies/multi-bsc.yaml -o lab/topologies/overrides/one-host.yaml health --e2e
+./gsm-lab cleanup                                         # what the projects left on this machine (dry run)
 ```
 
 Full guide, including what Osmocom does and doesn't support for multi-PLMN setups:
