@@ -33,7 +33,7 @@ scenario:
 
 # Where the programs are. 'osmocom': the pinned Osmocom set of this repository (./gsm build). 'aworker': a build of the
 # osmo-bsc a-worker-pool branch (the BSC and bsc-aworker come from there in both modes: the integrated pool of legacy
-# mode is a feature of that branch too). Default: the clean lab build of commit d0a5874e2.
+# mode is a feature of that branch too). Default: the clean lab build of commit 3b9dbfb06.
 binaries:
   osmocom: ~/dev/gsm/_install/bin
   aworker: ~/dev/osmo-bsc-a-worker-lab/build
