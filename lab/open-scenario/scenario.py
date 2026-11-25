@@ -44,7 +44,7 @@ TYPE_KEYS = {
     "bsc": {"vty", "ctrl", "stp", "mgw", "mgcp_client_port", "a_links", "aworker_pool", "bts"},
     "bts-virtual": {"vty", "ctrl", "bsc"},
     "virtphy": set(),
-    "mobile": {"vty", "virtphy", "sim"},
+    "mobile": {"vty", "virtphy", "sim", "bts"},
 }
 # 'a-worker-pool' keys of the a-worker-pool branch (src/a-worker/aworker_vty.c) that this scenario may set.
 POOL_KEYS = {"startup_timeout": "startup-timeout", "on_worker_failure": "on-worker-failure",
@@ -184,7 +184,7 @@ def validate(m):
             return None
         return r
 
-    pcs, nris, ports = {}, {}, {}
+    pcs, nris, ports, cells, sims = {}, {}, {}, {}, {}
 
     def port(eid, proto, a, p, what):
         if not isinstance(p, int) or not 0 < p < 65536:
@@ -280,6 +280,11 @@ def validate(m):
                 for k in ("band", "lac", "ci", "bsic", "unit_id", "arfcn"):
                     if k not in b:
                         err(m, f"element {eid}: bts {bid} lacks {k}")
+                for k, what in (("unit_id", "IPA unit id"), ("arfcn", "ARFCN"), (("lac", "ci"), "LAC/CI")):
+                    v = tuple(b.get(x) for x in k) if isinstance(k, tuple) else b.get(k)
+                    if v in cells.setdefault(what, {}):
+                        err(m, f"element {eid}: bts {bid} has the same {what} {v} as {cells[what][v]}")
+                    cells[what][v] = bid
         elif typ == "bts-virtual":
             b = ref(eid, "bsc", "bsc")
             if b and eid not in (el[b].get("bts") or {}):
@@ -288,10 +293,26 @@ def validate(m):
             ref(eid, "virtphy", "virtphy")
             if m["el"].get(e.get("virtphy"), {}).get("node") != e["node"]:
                 err(m, f"element {eid}: its virtphy must run on the same node (L1CTL unix socket)")
+            if e.get("virtphy") in sims.setdefault("virtphy", {}):
+                err(m, f"element {eid}: virtphy {e['virtphy']} is also used by {sims['virtphy'][e['virtphy']]}"
+                       " (one phone per virtphy)")
+            sims["virtphy"][e.get("virtphy")] = eid
             imsi = (e.get("sim") or {}).get("imsi")
             if not any(imsi == s.get("imsi") for x in el.values() if x.get("type") == "hlr"
                        for s in x.get("subscribers", [])):
                 err(m, f"element {eid}: SIM {imsi} is no HLR subscriber")
+            imei = (e.get("sim") or {}).get("imei")
+            if imei is not None and not re.fullmatch(r"\d{15}", str(imei)):
+                err(m, f"element {eid}: sim.imei must be a quoted string of 15 digits, got {imei!r}")
+            for k, v in (("IMSI", imsi), ("IMEI", imei)):
+                if v is not None and v in sims.setdefault(k, {}):
+                    err(m, f"element {eid}: {k} {v} is also used by {sims[k][v]}")
+                if v is not None:
+                    sims[k][v] = eid
+            if "bts" in e:      # the cell this phone camps on ('stick <ARFCN>'): virtual Um carries every cell
+                b = ref(eid, "bts", "bts-virtual")
+                if b and el[b]["node"] != e["node"]:
+                    err(m, f"element {eid}: its bts {b} must run on the same node (virtual Um multicast)")
     for eid, e in el.items():
         if e.get("type") == "msc":
             pcs.setdefault(e.get("point_code"), []).append(eid)
@@ -426,10 +447,16 @@ def r_mobile(m, eid):
     e = m["el"][eid]
     run, phy_run = processes(m, eid)[0]["run"], processes(m, e["virtphy"])[0]["run"]
     ki = " ".join(e["sim"]["ki"][i:i + 2] for i in range(0, 32, 2))
+    imei = e["sim"].get("imei", "000000000000000")
+    # with 'bts', the phone stays on that cell's ARFCN (osmocom-bb 'stick'); otherwise it picks any cell it hears
+    stick = ""
+    if e.get("bts"):
+        b = m["el"][e["bts"]]
+        stick = f" stick {m['el'][b['bsc']]['bts'][e['bts']]['arfcn']}\n"
     return (head(m, eid) + log_block(m, eid) + f"line vty\n no login\n bind {addr(m, eid)} {e['vty']}\n" +
             f"ms 1\n layer2-socket {phy_run}/l2\n sap-socket {run}/sap\n mncc-socket {run}/mncc\n"
-            " mncc-handler internal\n sim test\n network-selection-mode auto\n imei 000000000000000 0\n imei-fixed\n"
-            " sms-service-center 12345\n location-updating\n test-sim\n"
+            f" mncc-handler internal\n sim test\n network-selection-mode auto\n imei {imei} 0\n imei-fixed\n"
+            + stick + " sms-service-center 12345\n location-updating\n test-sim\n"
             f"  imsi {e['sim']['imsi']}\n  ki comp128 {ki}\n  no barred-access\n no shutdown\n")
 
 
@@ -813,8 +840,9 @@ def c_status(args):
                 alive = os.path.isfile(pidf) and os.path.exists(f"/proc/{open(pidf).read().split()[0]}")
                 line(eid, alive, "running" if alive else "not running")
                 continue
-            cmds = {"stp": ["show cs7 instance 0 asp"], "msc": ["show bsc"], "bsc": ["show mscs", "show a-worker-pool",
-                    "show bts 0"], "mobile": ["show ms 1"]}.get(e["type"], [])
+            cmds = {"stp": ["show cs7 instance 0 asp"], "msc": ["show bsc"], "bsc": ["show mscs", "show a-worker-pool"]
+                    + [f"show bts {n}" for n in range(len(e.get("bts") or {}))], "mobile": ["show ms 1"]
+                    }.get(e["type"], [])
             out = vty_cmds(a, e["vty"], cmds, 3)
             if out is None:
                 line(eid, False, f"no VTY at {a}:{e['vty']}")
@@ -831,10 +859,11 @@ def c_status(args):
             elif e["type"] == "bsc":
                 con = len(re.findall(r"BSSMAP state: CONNECTED", out))
                 ws = re.findall(r"worker (\d+): state (\w+)", out)
-                bts = re.search(r"OML Link state: connected.*where RSL is up: +1", out, re.S) is not None
-                line(eid, con == len(e["a_links"]) and all(s == "READY" for _, s in ws) and bts,
+                nbts = len(e.get("bts") or {})
+                up = len(re.findall(r"OML Link state: connected.*?where RSL is up: +1", out, re.S))
+                line(eid, con == len(e["a_links"]) and all(s == "READY" for _, s in ws) and up == nbts,
                      f"mode {mode_of(m, eid)}; BSSMAP CONNECTED {con}/{len(e['a_links'])}; workers "
-                     + ", ".join(f"{w} {s}" for w, s in ws) + f"; BTS 0 {'OML+RSL up' if bts else 'not up'}")
+                     + ", ".join(f"{w} {s}" for w, s in ws) + f"; BTS OML+RSL up {up}/{nbts}")
                 if mode_of(m, eid) == "supervisor":
                     sup = processes(m, eid)[0]["program"]
                     r = subprocess.run([sup, "--control", supervisor_socket(m, eid), "status"], capture_output=True,

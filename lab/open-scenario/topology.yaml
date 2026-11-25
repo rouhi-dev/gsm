@@ -12,9 +12,11 @@
 # share a socket; for real machines set host/address/run_dir per node (and copy this directory to the same path there).
 #
 # Topology: one PLMN, an MSC pool of two MSCs (NRI) behind one STP, one BSC with one A link -- one worker, one cs7
-# instance, one BSC point code -- per MSC, one virtual BTS, one virtual phone:
+# instance, one BSC point code -- per MSC, three virtual BTSs with three virtual phones each:
 #
-#   [ran]  mobile ~ virtphy ~(virtual Um, GSMTAP multicast)~ osmo-bts-virtual
+#   [ran]  ms-01-01..ms-01-03 (mobile + virtphy) ~ bts-01 (ARFCN 871) --+
+#          ms-02-01..ms-02-03 (mobile + virtphy) ~ bts-02 (ARFCN 873) --+  virtual Um: GSMTAP multicast; each phone
+#          ms-03-01..ms-03-03 (mobile + virtphy) ~ bts-03 (ARFCN 875) --+  stays on its cell ('bts:' -> stick ARFCN)
 #                                                               | Abis/IP (OML 3002, RSL 3003)
 #   [bsc]  osmo-bsc (+ bsc-aworker in supervisor mode) -- worker 0: cs7 0, PC 0.23.3 ---+   MGCP -> mgw-bsc
 #                                                      -- worker 1: cs7 1, PC 0.23.4 ---+
@@ -83,7 +85,16 @@ elements:
     vty: 4258
     ctrl: 4259                       # GSUP is always 4222 (osmo-hlr has only 'bind ip')
     subscribers:                     # provisioned over the VTY once osmo-hlr runs (window 'provision')
-      - { imsi: "001010000000501", msisdn: "5501", ki: "000102030405060708090a0b0c0d0e0f" }
+      # the SIMs of the nine phones: ms-BB-MM = phone MM of bts-BB -> IMSI ...5BM, MSISDN 55BM, Ki ...BM
+      - { imsi: "001010000000511", msisdn: "5511", ki: "000102030405060708090a0b0c0d0e11" }
+      - { imsi: "001010000000512", msisdn: "5512", ki: "000102030405060708090a0b0c0d0e12" }
+      - { imsi: "001010000000513", msisdn: "5513", ki: "000102030405060708090a0b0c0d0e13" }
+      - { imsi: "001010000000521", msisdn: "5521", ki: "000102030405060708090a0b0c0d0e21" }
+      - { imsi: "001010000000522", msisdn: "5522", ki: "000102030405060708090a0b0c0d0e22" }
+      - { imsi: "001010000000523", msisdn: "5523", ki: "000102030405060708090a0b0c0d0e23" }
+      - { imsi: "001010000000531", msisdn: "5531", ki: "000102030405060708090a0b0c0d0e31" }
+      - { imsi: "001010000000532", msisdn: "5532", ki: "000102030405060708090a0b0c0d0e32" }
+      - { imsi: "001010000000533", msisdn: "5533", ki: "000102030405060708090a0b0c0d0e33" }
   mgw-core: { type: mgw, node: core, vty: 4243, ctrl: 4267, mgcp_port: 2427, rtp: [30000, 30999] }
   msc-a:    { type: msc, node: core, point_code: 0.23.1, nri: 1, stp: stp-01, hlr: hlr-01, mgw: mgw-core,
               vty: 4254, ctrl: 4255, mgcp_client_port: 2728, sgs_port: 29118 }
@@ -116,11 +127,38 @@ elements:
     log_levels: { aworker: info, msc: info, lss7: info, lm3ua: info }
     bts:                             # cell identity lives in the BSC config (as in gsm-lab); key = the bts element
       bts-01: { band: DCS1800, lac: 1, ci: 1, bsic: 63, unit_id: 6969, arfcn: 871 }
+      bts-02: { band: DCS1800, lac: 1, ci: 2, bsic: 62, unit_id: 6970, arfcn: 873 }
+      bts-03: { band: DCS1800, lac: 1, ci: 3, bsic: 61, unit_id: 6971, arfcn: 875 }
+  # three BTS processes on one node: each needs its own VTY/CTRL port
   bts-01:   { type: bts-virtual, node: ran, bsc: bsc-01, vty: 4241, ctrl: 4238 }
-  phy-01:   { type: virtphy, node: ran }
-  ms-01:
-    type: mobile
-    node: ran
-    vty: 4247
-    virtphy: phy-01
-    sim: { imsi: "001010000000501", ki: "000102030405060708090a0b0c0d0e0f" }   # must be an hlr-01 subscriber
+  bts-02:   { type: bts-virtual, node: ran, bsc: bsc-01, vty: 4271, ctrl: 4272 }
+  bts-03:   { type: bts-virtual, node: ran, bsc: bsc-01, vty: 4273, ctrl: 4274 }
+  # nine phones: a phone is a 'mobile' with a 'virtphy' of its own (one L1CTL socket each). 'bts:' keeps it on that
+  # cell; its SIM must be an hlr-01 subscriber; IMEI 350000000005BM + check digit.
+  phy-01-01: { type: virtphy, node: ran }
+  phy-01-02: { type: virtphy, node: ran }
+  phy-01-03: { type: virtphy, node: ran }
+  phy-02-01: { type: virtphy, node: ran }
+  phy-02-02: { type: virtphy, node: ran }
+  phy-02-03: { type: virtphy, node: ran }
+  phy-03-01: { type: virtphy, node: ran }
+  phy-03-02: { type: virtphy, node: ran }
+  phy-03-03: { type: virtphy, node: ran }
+  ms-01-01: { type: mobile, node: ran, vty: 4247, virtphy: phy-01-01, bts: bts-01,
+              sim: { imsi: "001010000000511", ki: "000102030405060708090a0b0c0d0e11", imei: "350000000005112" } }
+  ms-01-02: { type: mobile, node: ran, vty: 4248, virtphy: phy-01-02, bts: bts-01,
+              sim: { imsi: "001010000000512", ki: "000102030405060708090a0b0c0d0e12", imei: "350000000005120" } }
+  ms-01-03: { type: mobile, node: ran, vty: 4249, virtphy: phy-01-03, bts: bts-01,
+              sim: { imsi: "001010000000513", ki: "000102030405060708090a0b0c0d0e13", imei: "350000000005138" } }
+  ms-02-01: { type: mobile, node: ran, vty: 4250, virtphy: phy-02-01, bts: bts-02,
+              sim: { imsi: "001010000000521", ki: "000102030405060708090a0b0c0d0e21", imei: "350000000005211" } }
+  ms-02-02: { type: mobile, node: ran, vty: 4251, virtphy: phy-02-02, bts: bts-02,
+              sim: { imsi: "001010000000522", ki: "000102030405060708090a0b0c0d0e22", imei: "350000000005229" } }
+  ms-02-03: { type: mobile, node: ran, vty: 4252, virtphy: phy-02-03, bts: bts-02,
+              sim: { imsi: "001010000000523", ki: "000102030405060708090a0b0c0d0e23", imei: "350000000005237" } }
+  ms-03-01: { type: mobile, node: ran, vty: 4253, virtphy: phy-03-01, bts: bts-03,
+              sim: { imsi: "001010000000531", ki: "000102030405060708090a0b0c0d0e31", imei: "350000000005310" } }
+  ms-03-02: { type: mobile, node: ran, vty: 4254, virtphy: phy-03-02, bts: bts-03,
+              sim: { imsi: "001010000000532", ki: "000102030405060708090a0b0c0d0e32", imei: "350000000005328" } }
+  ms-03-03: { type: mobile, node: ran, vty: 4255, virtphy: phy-03-03, bts: bts-03,
+              sim: { imsi: "001010000000533", ki: "000102030405060708090a0b0c0d0e33", imei: "350000000005336" } }

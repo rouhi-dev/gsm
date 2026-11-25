@@ -27,7 +27,9 @@ tmuxinator start -p generated/tmuxinator/core.yml   # then bsc.yml, then ran.yml
 | `supervisor` | `bsc-aworker` (runs the workers), then `osmo-bsc` (attaches over the session socket) | `mode supervisor` + `supervisor-socket`; the same file is read by both programs |
 
 **Topology:** node `core` (osmo-stp, osmo-hlr, osmo-mgw, two osmo-msc in an NRI pool), node `bsc` (osmo-bsc,
-bsc-aworker, osmo-mgw), node `ran` (osmo-bts-virtual, osmocom-bb virtphy + mobile over virtual Um). One A link per MSC:
+bsc-aworker, osmo-mgw), node `ran` (three osmo-bts-virtual, `bts-01`..`bts-03`, with three phones each, `ms-BB-01`..
+`ms-BB-03`: osmocom-bb mobile + a virtphy of its own, over virtual Um). A phone's `bts:` keeps it on that cell's ARFCN
+(`stick`); its SIM is an hlr-01 subscriber, its IMEI its own (`sim.imei`). One A link per MSC:
 one worker, one cs7 instance, one BSC point code each; M3UA over SCTP to the STP. On one machine every node is one
 loopback address (127.0.41.x); for separate machines set `nodes.<id>` (host, address, run_dir) and use the same
 directory path there.
@@ -37,5 +39,6 @@ directory path there.
   Osmocom lab on this machine that binds them on 0.0.0.0: run one of them at a time, or this one in a network
   namespace.
 * osmo-bts ends itself when its BSC goes away; re-run its window after restarting osmo-bsc.
-* Virtual Um is IP multicast (239.193.41.x): BTS and phone must be on one host or a multicast-capable LAN.
+* Virtual Um is IP multicast (239.193.41.x): BTS and phone must be on one host or a multicast-capable LAN. All cells
+  share the two groups; BTS and virtphy pick their frames by ARFCN, so every cell needs its own ARFCN.
 * Two A links to the same MSC are not supported by this osmo-bsc (plan item 2c); `check` rejects them.
