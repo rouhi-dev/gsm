@@ -1,0 +1,49 @@
+# Deployment A: a complete GSM network on one machine.
+# One PLMN, one MSC, one BSC, two virtual BTSs (no radio), one virtual phone.
+#
+#   gsm-lab -f lab/topologies/single-node.yaml validate
+#   gsm-lab -f lab/topologies/single-node.yaml start
+#   gsm-lab -f lab/topologies/single-node.yaml health --e2e
+lab:
+  name: single-node
+
+nodes:
+  node-01:
+    host: localhost              # local execution; a remote node would set host + address + ssh
+
+plmns:
+  test:
+    name: Test Network
+    mcc: "001"                   # strings: leading zeros matter
+    mnc: "01"
+
+instances:
+  stp-01: { service: stp, node: node-01 }
+  hlr-01: { service: hlr, node: node-01 }
+  mgw-01: { service: mgw, node: node-01 }
+  msc-01: { service: msc, node: node-01, point_code: 0.23.1 }
+  bsc-01: { service: bsc, node: node-01, point_code: 0.23.3 }
+  # two BTS processes on one node: each needs its own VTY/CTRL port
+  bts-01: { service: bts, variant: virtual, node: node-01 }
+  bts-02: { service: bts, variant: virtual, node: node-01, vty: 4271, ctrl: 4272 }
+  phy-ms1: { service: virtphy, node: node-01 }
+  ms-01:
+    service: mobile
+    node: node-01
+    virtphy: phy-ms1
+    sims:
+      - { imsi: "001010000000101", msisdn: "5101", ki: "000102030405060708090a0b0c0d0e0f" }
+
+networks:
+  net-a:
+    plmn: test
+    stp: stp-01
+    msc: msc-01
+    hlr: hlr-01
+    mgw: mgw-01
+    authentication: required
+    bscs:
+      bsc-01:
+        bts:
+          bts-01: { lac: 1, ci: 1, bsic: 63, unit_id: 6969, trx: [{ arfcn: 871 }] }
+          bts-02: { lac: 1, ci: 2, bsic: 62, unit_id: 6970, trx: [{ arfcn: 873 }] }

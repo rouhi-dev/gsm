@@ -1,3 +1,6 @@
 /_build/
 /_install/
 /config/build.local.conf
+# site-specific lab overrides (real node addresses, users, SIM keys): never committed, anywhere
+*.local.yaml
+__pycache__/
